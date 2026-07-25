@@ -106,11 +106,13 @@ class AutoUpdate(commands.Cog):
                             target_path == "deploy_config.json"
                         ):
                             continue
-                        
+                            
                         if is_dir:
                             os.makedirs(target_path, exist_ok=True)
                         else:
-                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                            dir_name = os.path.dirname(target_path)
+                            if dir_name:
+                                os.makedirs(dir_name, exist_ok=True)
                             with open(target_path, "wb") as f:
                                 f.write(z.read(member))
 
