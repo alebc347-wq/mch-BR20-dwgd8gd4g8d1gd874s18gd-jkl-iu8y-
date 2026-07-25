@@ -694,9 +694,10 @@ class Database:
         now = datetime.now(timezone.utc)
         now_str = now.isoformat()
         
-        # 計算過期時間
+        # 計算過期時間，限制最大天數為 365000 (約 1000 年) 以防 OverflowError
         from datetime import timedelta
-        expires_at = (now + timedelta(days=expires_in_days)).isoformat()
+        safe_days = min(expires_in_days, 365000)
+        expires_at = (now + timedelta(days=safe_days)).isoformat()
 
         # 2. 插入使用記錄
         await self.db.execute(
