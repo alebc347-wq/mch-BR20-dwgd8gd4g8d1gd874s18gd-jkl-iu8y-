@@ -770,6 +770,14 @@ async def async_main(bot: ProBot, token: str):
 
 def main():
     """啟動 Bot"""
+    # 檢查是否啟動總控中心網頁模式
+    if os.getenv("RUN_DASHBOARD", "false").lower() == "true":
+        import uvicorn
+        port = int(os.getenv("PORT", os.getenv("SERVER_PORT", 8000)))
+        print(f"🚀 正在 Wispbyte 啟動總控中心網頁服務，Port: {port}")
+        uvicorn.run("dashboard.app:app", host="0.0.0.0", port=port)
+        sys.exit(0)
+
     if not BOT_TOKEN:
         print("❌ 錯誤：未設定 DISCORD_TOKEN！")
         print("   請複製 .env.example 為 .env 並填入你的 Bot Token")
