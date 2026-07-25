@@ -329,6 +329,7 @@ class ProBot(commands.Bot):
             "cogs.cross_guild_chat",
             "cogs.competitor",
             "cogs.auto_update",
+            "cogs.discord_control",
         ]
         
         for cog in cog_files:
@@ -338,6 +339,15 @@ class ProBot(commands.Bot):
             except Exception as e:
                 print(f"  ❌ 載入失敗: {cog} — {e}")
         
+        # 註冊主備狀態指令過濾器 (只響應 Active 主機)
+        @self.check
+        async def globally_check_active(ctx):
+            return getattr(ctx.bot, "is_active_node", True)
+
+        @self.tree.interaction_check
+        async def globally_check_interaction(interaction: discord.Interaction):
+            return getattr(interaction.client, "is_active_node", True)
+
         # 同步 Slash Commands
         try:
             self.tree.add_command(add_status)
@@ -513,6 +523,8 @@ class ProBot(commands.Bot):
 
     async def on_tree_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
         """全域 Slash Command 錯誤處理"""
+        if not getattr(self, "is_active_node", True):
+            return
         # 輸出錯誤堆疊到終端機
         import traceback
         from discord import app_commands
@@ -528,7 +540,7 @@ class ProBot(commands.Bot):
                 return await self.send_error_response(
                     interaction_or_ctx=interaction,
                     title="❌ 權限不足",
-                    description="無法執行此操作：Bot 缺少執行此操作的 Discord 權限（例如：管理成員/禁言、踢出、封禁成員或管理訊息權限），或是該成員的角色階層高於 Bot 的最高角色角色組。",
+                    description="無法執行此操作：Bot 缺少執行此操作 of Discord 權限（例如：管理成員/禁言、踢出、封禁成員或管理訊息權限），或是該成員的角色階層高於 Bot 的最高角色角色組。",
                     error=original_error,
                     color=0xED4245,
                     badge_url=BadgeImages.ERROR
@@ -579,6 +591,10 @@ class ProBot(commands.Bot):
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """全域前綴指令錯誤處理"""
+        # 主備過濾：若非運作中節點或因主備 check 失敗，完全靜默不回應
+        if not getattr(self, "is_active_node", True) or isinstance(error, commands.CheckFailure):
+            return
+            
         if isinstance(error, commands.CommandNotFound):
             return  # 忽略未知指令
         
@@ -661,122 +677,6 @@ class ProBot(commands.Bot):
         await super().close()
 
 
-async def failover_loop(bot: ProBot, token: str):
-    """多主機故障轉移與心跳控制迴圈"""
-    server_id = os.getenv("SERVER_ID")
-    dashboard_url = os.getenv("DASHBOARD_URL")
-    
-    # 若無設定主備參數，則使用單機直連模式
-    if not server_id or not dashboard_url:
-        print("ℹ️ 未設定 SERVER_ID 或 DASHBOARD_URL，將直接登入 Discord (單機模式)")
-        try:
-            await bot.start(token)
-        except Exception as e:
-            print(f"❌ 登入失敗: {e}")
-        return
-
-    print(f"📡 啟動多主機主備控制系統，當前伺服器 ID: {server_id}")
-    bot_started = False
-    has_run_once = False # 是否曾經啟動過，用於重啟優化
-    
-    while True:
-        try:
-            # 決定當前要呈報給總控的心跳狀態
-            if getattr(bot, "is_restarting", False):
-                status = "restarting"
-            elif bot_started and not bot.is_closed():
-                status = "active"
-            else:
-                status = "idle"
-                
-            # 向總控發送心跳
-            url = f"{dashboard_url.rstrip('/')}/api/heartbeat"
-            active_id = None
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json={"server_id": server_id, "status": status}, timeout=8) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        active_id = data.get("active_server_id")
-                    else:
-                        print(f"⚠️ 總控中心心跳回傳異常 (HTTP {resp.status})")
-            
-            # 若連不上總控，active_id 為 None。為了防範總控伺服器掛點導致全部 Bot 離線，
-            # 當連不上總控時，各節點自行升格上線 (降級回單機模式防中斷)
-            if active_id is None:
-                active_id = server_id
-
-            # 主備狀態判定與執行
-            if active_id == server_id:
-                # 總控指定我為 Active
-                if not bot_started or bot.is_closed():
-                    if has_run_once:
-                        # 曾經啟動過但已被關閉過，為了避免 discord.py 連線狀態殘留，直接重新啟動進程！
-                        print("🔄 重新獲得 Active 權限，正在重新啟動進程以乾淨上線...")
-                        bot.is_restarting = True
-                        bot.exit_code = 1
-                        break
-                        
-                    print(f"✅ 總控中心指派為 Active，正在啟動 Discord Bot...")
-                    # 啟動 Bot (非同步背景任務)
-                    asyncio.create_task(bot.start(token))
-                    bot_started = True
-                    has_run_once = True
-            else:
-                # 總控指定其他人為 Active，我必須進入備用 (Idle) 狀態
-                if bot_started and not bot.is_closed():
-                    print(f"⚠️ 總控指定非本節點 (Active: {active_id})，正在將 Discord Bot 登出轉為備用狀態...")
-                    await bot.close()
-                    # 註：此時 bot_started 保持 True，讓下一次若再度升為 Active 時能觸發重啟進程以乾淨連線
-
-            # 向總控請求整體狀態，檢查是否被要求強制重啟
-            url_status = f"{dashboard_url.rstrip('/')}/api/status"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url_status, timeout=8) as resp:
-                    if resp.status == 200:
-                        status_data = await resp.json()
-                        for node in status_data.get("nodes", []):
-                            if node["server_id"] == server_id and node["status"] == "restarting_pending":
-                                print("🔄 總控中心要求重啟此節點！正在執行重啟流程...")
-                                bot.is_restarting = True
-                                bot.exit_code = 1
-                                if bot_started and not bot.is_closed():
-                                    await bot.close()
-                                break
-                                
-        except Exception as e:
-            print(f"❌ 主備控制迴圈發生異常: {e}")
-            # 當異常且不在線時，防中斷安全升格
-            if not bot_started or bot.is_closed():
-                print("⚠️ 連不上總控，為防止服務中斷，自動啟動機器人...")
-                asyncio.create_task(bot.start(token))
-                bot_started = True
-
-        if getattr(bot, "is_restarting", False):
-            break
-            
-        await asyncio.sleep(12)
-
-
-async def async_main(bot: ProBot, token: str):
-    """非同步主入口"""
-    # 檢查是否啟動總控中心網頁模式 (於背景非同步啟動，不阻塞 Discord 連線與容災迴圈)
-    if os.getenv("RUN_DASHBOARD", "false").lower() == "true":
-        import uvicorn
-        port = int(os.getenv("PORT", os.getenv("SERVER_PORT", 8000)))
-        print(f"🚀 正在背景非同步啟動總控中心網頁服務，Port: {port}")
-        config = uvicorn.Config("dashboard.app:app", host="0.0.0.0", port=port, log_level="info")
-        server = uvicorn.Server(config)
-        asyncio.create_task(server.serve())
-
-    # 啟動故障轉移心跳控制
-    await failover_loop(bot, token)
-    
-    # 保持主協程運行，直到重啟被觸發
-    while not getattr(bot, "is_restarting", False):
-        await asyncio.sleep(1)
-
-
 def main():
     """啟動 Bot"""
     if not BOT_TOKEN:
@@ -786,7 +686,7 @@ def main():
     
     bot = ProBot()
     try:
-        asyncio.run(async_main(bot, BOT_TOKEN))
+        bot.run(BOT_TOKEN)
     finally:
         exit_code = getattr(bot, "exit_code", 0)
         if exit_code == 1:
