@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot 總控中心</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+TC:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --primary-glow: rgba(99, 102, 241, 0.15);
+            --accent-color: #6366f1;
+            --online-color: #10b981;
+            --offline-color: #ef4444;
+            --idle-color: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', 'Noto Sans TC', sans-serif;
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 45%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow-x: hidden;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            position: relative;
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), transparent, rgba(16, 185, 129, 0.2));
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 20px;
+        }
+
+        header h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #ffffff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header .subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .global-status {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 12px;
+            padding: 12px 20px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pulse-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--online-color);
+            box-shadow: 0 0 10px var(--online-color);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.5; }
+            100% { transform: scale(0.9); opacity: 1; }
+        }
+
+        .node-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        @media (min-width: 600px) {
+            .node-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        .node-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 24px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .node-card:hover {
+            transform: translateY(-4px);
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(99, 102, 241, 0.3);
+            box-shadow: 0 10px 30px rgba(99, 102, 241, 0.05);
+        }
+
+        .node-card.active-node {
+            border-color: rgba(16, 185, 129, 0.4);
+            background: radial-gradient(circle at 100% 0%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
+        }
+
+        .node-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .node-id {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .node-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 20px;
+            text-transform: uppercase;
+        }
+
+        .badge-active {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--online-color);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-idle {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--idle-color);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-offline {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--offline-color);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .node-info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+
+        .info-label {
+            color: var(--text-secondary);
+        }
+
+        .info-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .node-actions {
+            margin-top: 24px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 10px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #4f46e5;
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .lock-banner {
+            background: rgba(245, 158, 11, 0.08);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            border-radius: 12px;
+            padding: 14px 20px;
+            font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .lock-text {
+            color: var(--idle-color);
+            font-weight: 500;
+        }
+
+        .btn-unlock {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--idle-color);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            padding: 6px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .btn-unlock:hover {
+            background: rgba(245, 158, 11, 0.3);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div>
+            <h1>Bot 總控中心</h1>
+            <div class="subtitle">自動容災心跳監控與故障轉移系統</div>
+        </div>
+        <div class="global-status">
+            <div class="pulse-dot"></div>
+            <span id="active-info">自動調度中</span>
+        </div>
+    </header>
+
+    <div id="lock-banner" class="lock-banner" style="display: none;">
+        <span class="lock-text" id="lock-text">⚠️ 系統目前已被手動鎖定於某節點</span>
+        <button class="btn-unlock" onclick="releaseLock()">解除鎖定</button>
+    </div>
+
+    <div class="node-grid" id="nodes-container">
+        <!-- 節點卡片將動態產生 -->
+    </div>
+</div>
+
+<script>
+    async function updateStatus() {
+        try {
+            const response = await fetch('/api/status');
+            const data = await response.json();
+            
+            const container = document.getElementById('nodes-container');
+            container.innerHTML = '';
+            
+            const activeInfo = document.getElementById('active-info');
+            if (data.current_active_id) {
+                activeInfo.textContent = `Active 節點: ${data.current_active_id}`;
+            } else {
+                activeInfo.textContent = '無運作中節點';
+            }
+
+            const lockBanner = document.getElementById('lock-banner');
+            if (data.manually_locked_id) {
+                lockBanner.style.display = 'flex';
+                document.getElementById('lock-text').textContent = `⚠️ 系統目前已手動鎖定於 [${data.manually_locked_id}]`;
+            } else {
+                lockBanner.style.display = 'none';
+            }
+
+            if (data.nodes.length === 0) {
+                container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: var(--text-secondary); padding: 40px;">尚未偵測到任何備用主機節點心跳</div>';
+                return;
+            }
+
+            // 依據節點 ID 排序確保順序一致
+            data.nodes.sort((a, b) => a.server_id.localeCompare(b.server_id));
+
+            data.nodes.forEach(node => {
+                const isOnline = node.is_online;
+                const isActive = node.is_active;
+                
+                let badgeClass = 'badge-offline';
+                let statusText = 'OFFLINE';
+                
+                if (isOnline) {
+                    if (isActive) {
+                        badgeClass = 'badge-active';
+                        statusText = 'ACTIVE (運作中)';
+                    } else {
+                        badgeClass = 'badge-idle';
+                        statusText = 'IDLE (備用)';
+                    }
+                }
+
+                const card = document.createElement('div');
+                card.className = `node-card ${isActive ? 'active-node' : ''}`;
+                
+                card.innerHTML = `
+                    <div class="node-header">
+                        <span class="node-id">${node.server_id}</span>
+                        <span class="node-badge ${badgeClass}">${statusText}</span>
+                    </div>
+                    <div class="node-info-row">
+                        <span class="info-label">最後心跳</span>
+                        <span class="info-value">${isOnline ? `${node.last_seen_seconds_ago} 秒前` : '已斷線'}</span>
+                    </div>
+                    <div class="node-info-row">
+                        <span class="info-label">心跳狀態</span>
+                        <span class="info-value">${node.status}</span>
+                    </div>
+                    <div class="node-actions">
+                        ${isOnline && !isActive ? `<button class="btn-primary" onclick="forceActive('${node.server_id}')">手動指定 Active</button>` : ''}
+                        ${isOnline ? `<button class="btn-secondary" onclick="restartNode('${node.server_id}')">要求重啟</button>` : ''}
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+        } catch (error) {
+            console.error('更新狀態失敗:', error);
+        }
+    }
+
+    async function forceActive(serverId) {
+        if (!confirm(`確定要手動指定 [${serverId}] 為 Active 運作節點嗎？\n這將會使其他運作中的機器人退役登出。`)) return;
+        try {
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'force_active', target_id: serverId })
+            });
+            updateStatus();
+        } catch (e) {
+            alert('控制操作失敗');
+        }
+    }
+
+    async function releaseLock() {
+        try {
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'release_lock', target_id: '' })
+            });
+            updateStatus();
+        } catch (e) {
+            alert('操作失敗');
+        }
+    }
+
+    async function restartNode(serverId) {
+        if (!confirm(`確定要對節點 [${serverId}] 發出重啟要求嗎？`)) return;
+        try {
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'restart', target_id: serverId })
+            });
+            updateStatus();
+            alert('已發送重啟請求，機器人收到後將自動重啟。');
+        } catch (e) {
+            alert('操作失敗');
+        }
+    }
+
+    // 每 3 秒更新一次狀態
+    setInterval(updateStatus, 3000);
+    // 首次載入
+    updateStatus();
+</script>
+</body>
+</html>
