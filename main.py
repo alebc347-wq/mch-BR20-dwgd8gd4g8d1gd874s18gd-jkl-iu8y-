@@ -760,6 +760,15 @@ async def failover_loop(bot: ProBot, token: str):
 
 async def async_main(bot: ProBot, token: str):
     """非同步主入口"""
+    # 檢查是否啟動總控中心網頁模式 (於背景非同步啟動，不阻塞 Discord 連線與容災迴圈)
+    if os.getenv("RUN_DASHBOARD", "false").lower() == "true":
+        import uvicorn
+        port = int(os.getenv("PORT", os.getenv("SERVER_PORT", 8000)))
+        print(f"🚀 正在背景非同步啟動總控中心網頁服務，Port: {port}")
+        config = uvicorn.Config("dashboard.app:app", host="0.0.0.0", port=port, log_level="info")
+        server = uvicorn.Server(config)
+        asyncio.create_task(server.serve())
+
     # 啟動故障轉移心跳控制
     await failover_loop(bot, token)
     
@@ -770,14 +779,6 @@ async def async_main(bot: ProBot, token: str):
 
 def main():
     """啟動 Bot"""
-    # 檢查是否啟動總控中心網頁模式
-    if os.getenv("RUN_DASHBOARD", "false").lower() == "true":
-        import uvicorn
-        port = int(os.getenv("PORT", os.getenv("SERVER_PORT", 8000)))
-        print(f"🚀 正在 Wispbyte 啟動總控中心網頁服務，Port: {port}")
-        uvicorn.run("dashboard.app:app", host="0.0.0.0", port=port)
-        sys.exit(0)
-
     if not BOT_TOKEN:
         print("❌ 錯誤：未設定 DISCORD_TOKEN！")
         print("   請複製 .env.example 為 .env 並填入你的 Bot Token")
