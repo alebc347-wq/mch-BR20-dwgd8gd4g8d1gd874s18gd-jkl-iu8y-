@@ -1,0 +1,30 @@
+[
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"100 訂閱 !!!!我想說..... #100ksubscribers  #Ans戰隊 #roblox 53 seconds\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"一塊鼠餅 𝓜𝓸𝓾𝓼𝓮𝔂𝓒𝓻𝓪𝓬𝓴𝓮𝓻 - 130 subscribers. Go to channel\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"黃金noob - 486 subscribers. Go to channel\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"一塊鼠餅 𝓜𝓸𝓾𝓼𝓮𝔂𝓒𝓻𝓪𝓬𝓴𝓮𝓻 - 130 subscribers. Go to channel\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"黃金noob - 486 subscribers. Go to channel\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"一塊鼠餅 𝓜𝓸𝓾𝓼𝓮𝔂𝓒𝓻𝓪𝓬𝓴𝓮𝓻 - 130 subscribers. Go to channel\""
+  },
+  {
+    "pattern": "\"label\"\\s*:\\s*\"[^\"]*?subscriber[^\"]*?\"",
+    "match": "\"label\":\"超級菜鳥 - 3 subscribers. Go to channel\""
+  }
+]

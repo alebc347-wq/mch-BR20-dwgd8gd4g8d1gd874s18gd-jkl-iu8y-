@@ -1,0 +1,17 @@
+{
+  "invidious.flokinet.to": {
+    "status": 200,
+    "author": "一塊鼠餅 𝓜𝓸𝓾𝓼𝓮𝔂𝓒𝓻𝓪𝓬𝓴𝓮𝓻",
+    "subCount": 130,
+    "subscriberCount": null
+  },
+  "invidious.projectsegfau.lt": {
+    "error": "200, message='Attempt to decode JSON with unexpected mimetype: text/plain; charset=utf-8', url='https://invidious.projectsegfau.lt/api/v1/channels/UCDIEP8rSbcF65zjicvupCBQ'"
+  },
+  "invidious.drgns.space": {
+    "error": "Cannot connect to host invidious.drgns.space:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]"
+  },
+  "inv.tux.im": {
+    "error": "Cannot connect to host inv.tux.im:443 ssl:default [getaddrinfo failed]"
+  }
+}
