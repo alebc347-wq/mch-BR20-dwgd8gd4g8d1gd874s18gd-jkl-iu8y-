@@ -89,9 +89,15 @@ class AutoUpdate(commands.Cog):
                 for member in z.infolist():
                     parts = member.filename.split('/')
                     if len(parts) > 1:
-                        target_path = os.path.join(*parts[1:])
-                        if not target_path:
+                        # 判斷是否為目錄
+                        is_dir = member.is_dir() or member.filename.endswith('/') or parts[-1] == ''
+                        
+                        # 清理並重組路徑，移除空元素以防路徑結尾帶斜線
+                        clean_parts = [p for p in parts[1:] if p]
+                        if not clean_parts:
                             continue
+                            
+                        target_path = os.path.join(*clean_parts)
                         
                         # 排除不應覆蓋的檔案與資料夾
                         if (
@@ -101,7 +107,7 @@ class AutoUpdate(commands.Cog):
                         ):
                             continue
                         
-                        if member.is_dir():
+                        if is_dir:
                             os.makedirs(target_path, exist_ok=True)
                         else:
                             os.makedirs(os.path.dirname(target_path), exist_ok=True)
