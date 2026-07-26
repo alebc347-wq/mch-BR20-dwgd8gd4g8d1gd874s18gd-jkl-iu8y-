@@ -1042,14 +1042,21 @@ class Moderation(commands.Cog):
         voice_commands_leave = ["滾", "出去", "離開", "掰掰", "走開"]
         voice_commands_join = ["來一下", "過來", "加進來"]
 
-        if any(cmd in content for cmd in voice_commands_leave):
+        # 進行前綴清理與完整匹配，避免聊天時包含這些字眼誤觸發
+        prefix = self.bot.command_prefix
+        if isinstance(prefix, str) and content.startswith(prefix):
+            clean_content = content[len(prefix):].strip()
+        else:
+            clean_content = content.strip()
+
+        if clean_content in voice_commands_leave:
             if message.guild.voice_client:
                 await message.guild.voice_client.disconnect()
                 await message.channel.send("掰掰，我先走啦 👋")
             else:
                 await message.channel.send("我不在語音頻道裡喔 🤔")
 
-        elif any(cmd in content for cmd in voice_commands_join):
+        elif clean_content in voice_commands_join:
             voice_state = message.author.voice
             if voice_state and voice_state.channel:
                 channel = voice_state.channel
