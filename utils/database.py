@@ -694,9 +694,16 @@ class Database:
         now = datetime.now(timezone.utc)
         now_str = now.isoformat()
         
-        # 計算過期時間，限制最大天數為 365000 (約 1000 年) 以防 OverflowError
+        # 計算過期時間，限制最大天數為 365000 (約 1000 年) 以防 OverflowError/TypeError
         from datetime import timedelta
-        safe_days = min(expires_in_days, 365000)
+        if expires_in_days is None:
+            safe_days = 365000
+        else:
+            try:
+                safe_days = min(int(expires_in_days), 365000)
+            except Exception:
+                safe_days = 30
+        
         expires_at = (now + timedelta(days=safe_days)).isoformat()
 
         # 2. 插入使用記錄
@@ -715,7 +722,7 @@ class Database:
                 try:
                     ext_expires = datetime.fromisoformat(existing[0])
                     if ext_expires.replace(tzinfo=timezone.utc) > now.replace(tzinfo=timezone.utc):
-                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=expires_in_days)).isoformat()
+                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=safe_days)).isoformat()
                 except Exception:
                     pass
 
@@ -733,7 +740,15 @@ class Database:
         now_str = now.isoformat()
         
         from datetime import timedelta
-        expires_at = (now + timedelta(days=expires_in_days)).isoformat()
+        if expires_in_days is None:
+            safe_days = 365000
+        else:
+            try:
+                safe_days = min(int(expires_in_days), 365000)
+            except Exception:
+                safe_days = 30
+
+        expires_at = (now + timedelta(days=safe_days)).isoformat()
 
         # 如果已經是 Ultra 且未過期，則延長時間，否則從現在開始算
         async with self.db.execute("SELECT expires_at FROM ultra_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
@@ -742,7 +757,7 @@ class Database:
                 try:
                     ext_expires = datetime.fromisoformat(existing[0])
                     if ext_expires.replace(tzinfo=timezone.utc) > now.replace(tzinfo=timezone.utc):
-                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=expires_in_days)).isoformat()
+                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=safe_days)).isoformat()
                 except Exception:
                     pass
 
