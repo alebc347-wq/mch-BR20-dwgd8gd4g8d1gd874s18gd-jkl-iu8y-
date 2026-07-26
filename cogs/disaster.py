@@ -39,7 +39,11 @@ class Disaster(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.enabled_guilds = _load_enabled_guilds()
-        self.last_ids = {"earthquake": None, "weather": None}
+        self.last_ids = {
+            "earthquake_alert": None, 
+            "earthquake_report": None, 
+            "weather": None
+        }
 
     async def cog_load(self):
         self.disaster_monitor.start()
@@ -48,16 +52,37 @@ class Disaster(commands.Cog):
         self.disaster_monitor.cancel()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 核心監控任務 (每 30 秒輪詢)
+    # 核心監控任務 (每 10 秒輪詢，確保地震速報時效性)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=10)
     async def disaster_monitor(self):
+        # ─── 主備節點過濾 ───
+        # 僅在 Active 主機執行天災輪詢，防止重複發送通知
+        if not getattr(self.bot, "is_active_node", True):
+            return
+
         if not self.enabled_guilds:
             return
 
         async with aiohttp.ClientSession() as session:
-            # 1. 地震速報
+            # 1. 國家級警報 / 地震速報 (E-A0015-001 - EEW)
+            try:
+                url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001?Authorization={CWA_API_KEY}"
+                async with session.get(url) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        eqs = data.get("records", {}).get("Earthquake", [])
+                        if eqs:
+                            eq = eqs[0]
+                            eid = eq.get("ReportNo") or eq.get("EarthquakeNo")
+                            if self.last_ids.get("earthquake_alert") != eid:
+                                self.last_ids["earthquake_alert"] = eid
+                                await self._broadcast(eq, "earthquake_alert")
+            except Exception:
+                pass
+
+            # 2. 顯著有感地震報告 (E-A0015-002 - Report)
             try:
                 url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-002?Authorization={CWA_API_KEY}"
                 async with session.get(url) as r:
@@ -67,13 +92,13 @@ class Disaster(commands.Cog):
                         if eqs:
                             eq = eqs[0]
                             eid = eq.get("ReportNo") or eq.get("EarthquakeNo")
-                            if self.last_ids["earthquake"] != eid:
-                                self.last_ids["earthquake"] = eid
-                                await self._broadcast(eq, "earthquake")
+                            if self.last_ids.get("earthquake_report") != eid:
+                                self.last_ids["earthquake_report"] = eid
+                                await self._broadcast(eq, "earthquake_report")
             except Exception:
                 pass
 
-            # 2. 天氣特報
+            # 3. 天氣特報 (W-C0033-001)
             try:
                 url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/W-C0033-001?Authorization={CWA_API_KEY}"
                 async with session.get(url) as r:
@@ -101,33 +126,53 @@ class Disaster(commands.Cog):
         embed = discord.Embed(timestamp=datetime.now(timezone.utc))
         content = "@everyone 📢 **即時災害預警**"
 
-        if dtype == "earthquake":
+        if dtype == "earthquake_alert":
+            info = data.get("EarthquakeInfo", {})
+            loc = info.get("Epicenter", {}).get("Location", "台灣區域")
+            mag = info.get("EarthquakeMagnitude", {}).get("MagnitudeValue", "未知")
+            dep = info.get("EarthquakeDepth", {}).get("Value", "未知")
+            otime = info.get("OriginTime", "剛剛")
+
+            embed.title = "🚨 🫨 【國家級警報】中央氣象署發布地震速報！"
+            embed.description = (
+                f"**⚠️ 警報響起，全台有感！請落實防震三步驟：**\n"
+                f"🛡️ **趴下 (Drop)、掩護 (Cover)、穩住 (Hold on)**\n\n"
+                f"📌 **發震時間**：`{otime}`\n"
+                f"📌 **預估震央**：`{loc}`\n"
+                f"📌 **預估規模**：`M {mag}`\n"
+                f"📌 **預估深度**：`{dep} km`\n\n"
+                f"*（此為第一時間系統速報，詳細震度請依後續顯著有感地震報告為準。）*"
+            )
+            embed.color = discord.Color.from_rgb(237, 66, 69) # 警報紅
+            
+        elif dtype == "earthquake_report":
             info = data.get("EarthquakeInfo", {})
             loc = info.get("Epicenter", {}).get("Location", "台灣區域")
             mag = info.get("EarthquakeMagnitude", {}).get("MagnitudeValue", "未知")
             dep = info.get("EarthquakeDepth", {}).get("Value", "未知")
             img = data.get("ReportImageURI")
 
-            embed.title = "🫨 【地震速報】偵測到有感地震！"
+            embed.title = "🫨 【顯著有感地震報告】詳細觀測圖發布"
             embed.description = (
-                f"🚨 **請落實：趴下、掩護、穩住**\n\n"
                 f"**地點：** `{loc}`\n"
                 f"**規模：** `M {mag}`\n"
-                f"**深度：** `{dep} km`"
+                f"**深度：** `{dep} km`\n\n"
+                f"📍 觀測細節與各地震度請見下方報告圖："
             )
-            embed.color = discord.Color.red()
+            embed.color = discord.Color.orange()
             if img:
                 embed.set_image(url=img)
+
         else:
             title = data.get("datasetDescription", "天氣特報")
             desc = data.get("contents", {}).get("content", {}).get("description", "請注意氣象變化")
             embed.title = f"⛈️ 【{title}】發布中"
             display_desc = desc[:1000] + "..." if len(desc) > 1000 else desc
             embed.description = f"```{display_desc}```"
-            embed.color = discord.Color.orange()
+            embed.color = discord.Color.blue()
 
         embed.set_footer(
-            text="中央氣象署 CWA 即時連線",
+            text="交通部中央氣象署 CWA 即時連線",
             icon_url="https://www.cwa.gov.tw/favicon.ico",
         )
 
