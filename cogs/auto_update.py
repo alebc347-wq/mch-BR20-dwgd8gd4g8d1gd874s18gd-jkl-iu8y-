@@ -56,13 +56,13 @@ class AutoUpdate(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @sync_group.command(name="run")
-    async def sync_run(self, ctx: commands.Context):
-        """執行更新流程"""
+    async def run_update_process(self, update_status_func) -> bool:
+        """核心更新與重啟流程，傳入非同步狀態更新回呼函數"""
         if not self.repo:
-            return await ctx.send("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`（格式例如：`owner/repo`）。")
+            await update_status_func("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`。")
+            return False
 
-        message = await ctx.send("📥 正在從 GitHub 下載最新程式碼...")
+        await update_status_func("📥 正在從 GitHub 下載最新程式碼...")
 
         headers = {
             "User-Agent": "Discord-Bot-Auto-Updater",
@@ -78,11 +78,12 @@ class AutoUpdate(commands.Cog):
                 async with session.get(url, headers=headers) as response:
                     if response.status != 200:
                         text = await response.text()
-                        return await message.edit(content=f"❌ 下載失敗 (HTTP {response.status}): {text}")
+                        await update_status_func(f"❌ 下載失敗 (HTTP {response.status}): {text}")
+                        return False
                     
                     zip_data = await response.read()
 
-            await message.edit(content="📦 下載完成，正在解壓縮並覆蓋程式碼...")
+            await update_status_func("📦 下載完成，正在解壓縮並覆蓋程式碼...")
 
             # 在記憶體中解壓縮並覆蓋
             with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
@@ -116,7 +117,7 @@ class AutoUpdate(commands.Cog):
                             with open(target_path, "wb") as f:
                                 f.write(z.read(member))
 
-            await message.edit(content="✅ 程式碼覆蓋成功！正在進行安全重啟...")
+            await update_status_func("✅ 程式碼覆蓋成功！正在進行安全重啟...")
             
             # 設定狀態為請勿打擾與正在重新啟動的活動，並等待狀態更新
             try:
@@ -132,9 +133,23 @@ class AutoUpdate(commands.Cog):
             self.bot.is_restarting = True
             self.bot.exit_code = 1
             await self.bot.close()
+            return True
 
         except Exception as e:
-            await message.edit(content=f"❌ 更新過程中發生錯誤: `{str(e)}`")
+            await update_status_func(f"❌ 更新過程中發生錯誤: `{str(e)}`")
+            return False
+
+    @sync_group.command(name="run")
+    async def sync_run(self, ctx: commands.Context):
+        """執行更新流程"""
+        message = None
+        async def update_status(text: str):
+            nonlocal message
+            if not message:
+                message = await ctx.send(text)
+            else:
+                await message.edit(content=text)
+        await self.run_update_process(update_status)
 
 
 async def setup(bot: commands.Bot):

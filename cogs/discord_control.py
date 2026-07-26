@@ -44,6 +44,14 @@ class CoordinationView(discord.ui.View):
     async def restart_wisp2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.handle_control_action(interaction, "restart", "wispbyte-2")
 
+    @discord.ui.button(label="同步 1 號 (Pull)", style=discord.ButtonStyle.secondary, custom_id="sync_wisp1")
+    async def sync_wisp1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_control_action(interaction, "sync", "wispbyte-1")
+
+    @discord.ui.button(label="同步 2 號 (Pull)", style=discord.ButtonStyle.secondary, custom_id="sync_wisp2")
+    async def sync_wisp2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_control_action(interaction, "sync", "wispbyte-2")
+
 
 class DiscordControl(commands.Cog):
     """Discord 內建多主機總控與協調系統"""
@@ -103,6 +111,9 @@ class DiscordControl(commands.Cog):
         elif action == "restart":
             data["restarting_pending"] = target
             msg_text = f"已向 `{target}` 發送安全重啟要求，主機在下次心跳時會執行重新啟動。"
+        elif action == "sync":
+            data["sync_pending"] = target
+            msg_text = f"已向 `{target}` 發送程式碼同步要求，主機在下次心跳時會從 GitHub 拉取並安全重啟。"
 
         # 編輯更新 Embed
         new_embed = self.build_embed(data)
@@ -115,6 +126,7 @@ class DiscordControl(commands.Cog):
             "active": "",
             "locked": "",
             "restarting_pending": "",
+            "sync_pending": "",
             "heartbeats": {}
         }
         
@@ -161,7 +173,12 @@ class DiscordControl(commands.Cog):
             
             if is_online:
                 status_emoji = "🟢" if is_active else "🟡"
-                status_text = "ACTIVE (運作中)" if is_active else "IDLE (靜默備用)"
+                if data.get("restarting_pending") == sid:
+                    status_text = "🔄 重啟指令發送中..."
+                elif data.get("sync_pending") == sid:
+                    status_text = "📥 同步指令發送中..."
+                else:
+                    status_text = "ACTIVE (運作中)" if is_active else "IDLE (靜默備用)"
                 time_str = f"<t:{int(last_seen)}:R>"
             else:
                 status_emoji = "🔴"
@@ -198,6 +215,7 @@ class DiscordControl(commands.Cog):
                     "active": self.server_id,
                     "locked": "",
                     "restarting_pending": "",
+                    "sync_pending": "",
                     "heartbeats": {self.server_id: time.time()}
                 }
                 embed = self.build_embed(initial_data)
@@ -240,6 +258,23 @@ class DiscordControl(commands.Cog):
                 self.bot.exit_code = 1
                 await self.bot.close()
                 return
+
+            # 3.5. 處理強制同步更新指令
+            if data.get("sync_pending") == self.server_id:
+                print("🔄 接收到總控同步要求，正在執行從 GitHub 更新流程...")
+                # 清除同步請求，避免重啟後一直卡在更新循環
+                data["sync_pending"] = ""
+                new_embed = self.build_embed(data)
+                await message.edit(embed=new_embed)
+                
+                # 取得 AutoUpdate Cog 並調用核心更新流程
+                auto_update_cog = self.bot.get_cog("AutoUpdate")
+                if auto_update_cog:
+                    async def update_status(text: str):
+                        print(f"[Panel Sync Update] {text}")
+                    # 在背景安全執行同步覆蓋與重啟
+                    asyncio.create_task(auto_update_cog.run_update_process(update_status))
+                    return
 
             # 4. 主備故障轉移邏輯
             # 計算哪些節點是在線的 (心跳在 35 秒內)
