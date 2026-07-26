@@ -290,11 +290,11 @@ class ProBot(commands.Bot):
                 pass
             # 僅允許在「總控協調頻道」中點擊按鈕或互動（以響應重啟與同步按鈕），其餘普通頻道的互動均忽略
             if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
-                await self.tree.process_interaction(interaction)
+                await self.tree._call(interaction)
                 return
             return
             
-        await self.tree.process_interaction(interaction)
+        await self.tree._call(interaction)
 
     def dispatch(self, event_name, *args, **kwargs):
         """核心事件分派（全域主備事件與監聽器過濾）"""
