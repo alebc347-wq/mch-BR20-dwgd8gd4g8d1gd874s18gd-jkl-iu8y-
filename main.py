@@ -286,6 +286,32 @@ class ProBot(commands.Bot):
             return
         await super().on_interaction(interaction)
 
+    def dispatch(self, event_name, *args, **kwargs):
+        """核心事件分派（全域主備事件與監聽器過濾）"""
+        # 允許在備用節點執行的基礎系統事件白名單
+        allowed_system_events = {
+            "ready", "connect", "disconnect", "resumed", "error",
+            "interaction", "interaction_error", "command_error",
+            "socket_raw_receive", "socket_raw_send"
+        }
+
+        # 如果本機為 Idle 靜默備用節點
+        if not getattr(self, "is_active_node", True):
+            # 對於 message 事件，我們只讓 Bot 自身的前綴指令解析運作，防止觸發 Cog 中其他的 on_message 監聽器
+            if event_name == "message":
+                try:
+                    message = args[0]
+                    self.loop.create_task(self.on_message(message))
+                except Exception:
+                    pass
+                return
+
+            # 其他任何不在白名單中的應用事件（如 member_update, voice_state_update），在此完全丟棄不予分派給 Cog 監聽器
+            if event_name not in allowed_system_events:
+                return
+
+        super().dispatch(event_name, *args, **kwargs)
+
         
         # 載入所有宣傳狀態
         PROMO_FILE = os.path.join(os.path.dirname(__file__), "data", "promo_statuses.json")
