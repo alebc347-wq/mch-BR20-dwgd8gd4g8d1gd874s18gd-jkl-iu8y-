@@ -281,9 +281,19 @@ class ProBot(commands.Bot):
 
     async def on_interaction(self, interaction: discord.Interaction):
         """處理所有 Discord 互動事件（全域主備節點過濾）"""
-        # 如果本機為 Idle 靜默備用節點，則完全忽略此事件，防止搶答導致 Unknown interaction (10062) 錯誤
+        # 如果本機為 Idle 靜默備用節點
         if not getattr(self, "is_active_node", True):
+            coordination_channel_id = 0
+            try:
+                coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
+            except Exception:
+                pass
+            # 僅允許在「總控協調頻道」中點擊按鈕或互動（以響應重啟與同步按鈕），其餘普通頻道的互動均忽略
+            if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
+                await self.tree.process_interaction(interaction)
+                return
             return
+            
         await self.tree.process_interaction(interaction)
 
     def dispatch(self, event_name, *args, **kwargs):
@@ -372,13 +382,24 @@ class ProBot(commands.Bot):
             except Exception as e:
                 print(f"  ❌ 載入失敗: {cog} — {e}")
         
-        # 註冊主備狀態指令過濾器 (只響應 Active 主機)
+        # 註冊主備狀態指令過濾器 (只響應 Active 主機，但豁免 sync、reboot、restart、ultra_admin 等管理指令以容許遠端控制)
         @self.check
         async def globally_check_active(ctx):
+            exempt_commands = {"sync", "reboot", "restart", "ultra_admin"}
+            if ctx.command and (ctx.command.name in exempt_commands or (ctx.command.parent and ctx.command.parent.name in exempt_commands)):
+                return True
             return getattr(ctx.bot, "is_active_node", True)
 
         @self.tree.interaction_check
         async def globally_check_interaction(interaction: discord.Interaction):
+            coordination_channel_id = 0
+            try:
+                coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
+            except Exception:
+                pass
+            # 僅允許在「總控協調頻道」進行 Interaction（例如按鈕控制與同步），以防搶答
+            if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
+                return True
             return getattr(interaction.client, "is_active_node", True)
 
         # 同步 Slash Commands
