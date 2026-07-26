@@ -284,7 +284,7 @@ class ProBot(commands.Bot):
         # 如果本機為 Idle 靜默備用節點，則完全忽略此事件，防止搶答導致 Unknown interaction (10062) 錯誤
         if not getattr(self, "is_active_node", True):
             return
-        await super().on_interaction(interaction)
+        await self.tree.process_interaction(interaction)
 
     def dispatch(self, event_name, *args, **kwargs):
         """核心事件分派（全域主備事件與監聽器過濾）"""
