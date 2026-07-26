@@ -1048,6 +1048,21 @@ class Music(commands.Cog):
                 identifier="Serenetia-SSL",
                 uri="https://lavalinkv4.serenetia.com:443",
                 password="https://seretia.link/discord"
+            ),
+            wavelink.Node(
+                identifier="MilloHost-SSL",
+                uri="https://lava-v4.millohost.my.id:443",
+                password="https://discord.gg/mjS5J2K3ep"
+            ),
+            wavelink.Node(
+                identifier="TriniumHost-Nodelink",
+                uri="https://nodelink.triniumhost.com:443",
+                password="free"
+            ),
+            wavelink.Node(
+                identifier="TriniumHost-Nodelink02",
+                uri="https://nodelink-02.triniumhost.com:443",
+                password="trinium"
             )
         ]
         
