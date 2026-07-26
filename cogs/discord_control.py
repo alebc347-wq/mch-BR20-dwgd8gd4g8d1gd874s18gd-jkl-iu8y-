@@ -225,6 +225,16 @@ class DiscordControl(commands.Cog):
                 new_embed = self.build_embed(data)
                 await message.edit(embed=new_embed)
                 
+                # 設定狀態為請勿打擾與正在重新啟動的活動，並等待狀態更新
+                try:
+                    await self.bot.change_presence(
+                        status=discord.Status.dnd,
+                        activity=discord.Game("正在重新啟動...")
+                    )
+                    await asyncio.sleep(1.5)
+                except Exception:
+                    pass
+                
                 # 執行重啟
                 self.bot.is_restarting = True
                 self.bot.exit_code = 1
