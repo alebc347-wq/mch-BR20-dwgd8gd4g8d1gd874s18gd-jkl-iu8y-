@@ -295,7 +295,20 @@ class DiscordControl(commands.Cog):
                     if active_nodes:
                         # 排序選擇優先權最高者
                         active_nodes.sort()
-                        data["active"] = active_nodes[0]
+                        new_active = active_nodes[0]
+                        data["active"] = new_active
+                        
+                        # ⚠️ 觸發自動故障轉移警報：原本有 active，但該 active 離線了，因而更換 active 主機
+                        if current_active and current_active != new_active:
+                            try:
+                                alert_msg = (
+                                    f"⚠️ **【緊急警報】主機 `{current_active}` 發生故障離線！**\n"
+                                    f"🔄 系統已自動將服務轉移至備用主機 `{new_active}`。\n"
+                                    f"🔔 請管理員 <@1437408048934027274> 儘速檢查 Wispbyte 主機狀態！"
+                                )
+                                await channel.send(alert_msg)
+                            except Exception as alert_err:
+                                print(f"❌ 發送緊急警報失敗: {alert_err}")
                     else:
                         data["active"] = ""
 
