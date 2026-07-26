@@ -468,6 +468,7 @@ class Ultra(commands.Cog):
     @app_commands.command(name="ultra_admin", description="管理 Ultra 激活金鑰與設定 (僅限 Bot 擁有者)")
     @app_commands.choices(action=[
         app_commands.Choice(name="產生 Ultra 金鑰", value="generate"),
+        app_commands.Choice(name="批量產生 Ultra 金鑰", value="batch_generate"),
         app_commands.Choice(name="列出未使用的金鑰", value="list_unused"),
         app_commands.Choice(name="列出已使用的金鑰", value="list_used"),
         app_commands.Choice(name="設定擁有者 YouTube 頻道", value="set_youtube"),
@@ -475,6 +476,7 @@ class Ultra(commands.Cog):
     @app_commands.describe(
         action="要執行的動作",
         days="金鑰的有效天數 (預設 30 天)",
+        count="批量產生的金鑰個數 (僅批量產生時有效，預設 1)",
         key_or_value="啟用碼或設定值 (設定頻道時填寫 ID/Username/URL)"
     )
     async def ultra_admin(
@@ -482,6 +484,7 @@ class Ultra(commands.Cog):
         interaction: discord.Interaction,
         action: str,
         days: Optional[int] = 30,
+        count: Optional[int] = 1,
         key_or_value: Optional[str] = None
     ):
         # 檢查是否為擁有者
@@ -503,6 +506,27 @@ class Ultra(commands.Cog):
                     f"🔑 **激活碼：** `{new_key}`\n"
                     f"📅 **有效天數：** {days} 天\n\n"
                     f"您可以將此金鑰發送給用戶。"
+                ),
+                color=Colors.SUCCESS
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        elif action == "batch_generate":
+            # 批量產生 Ultra 金鑰
+            count = max(1, min(count or 1, 50))
+            keys = []
+            for _ in range(count):
+                new_key = f"HERO-ULTRA-{uuid.uuid4().hex.upper()[:16]}"
+                await self.db.add_ultra_key(new_key, days)
+                keys.append(new_key)
+            
+            keys_str = "\n".join([f"• `{k}`" for k in keys])
+            embed = discord.Embed(
+                title=f"✨ 成功批量產生 {count} 組 Ultra 激活碼",
+                description=(
+                    f"📅 **每組有效天數：** {days} 天\n\n"
+                    f"🔑 **激活碼清單：**\n{keys_str}\n\n"
+                    f"您現在可以將這些金鑰分發給用戶使用。"
                 ),
                 color=Colors.SUCCESS
             )
