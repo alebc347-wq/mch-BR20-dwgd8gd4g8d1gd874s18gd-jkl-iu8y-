@@ -279,6 +279,13 @@ class ProBot(commands.Bot):
             return True
         return await super().is_owner(user)
 
+    async def on_interaction(self, interaction: discord.Interaction):
+        """處理所有 Discord 互動事件（全域主備節點過濾）"""
+        # 如果本機為 Idle 靜默備用節點，則完全忽略此事件，防止搶答導致 Unknown interaction (10062) 錯誤
+        if not getattr(self, "is_active_node", True):
+            return
+        await super().on_interaction(interaction)
+
         
         # 載入所有宣傳狀態
         PROMO_FILE = os.path.join(os.path.dirname(__file__), "data", "promo_statuses.json")
