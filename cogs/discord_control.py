@@ -18,11 +18,17 @@ class CoordinationView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """限制只有繞過 ID 或是 Bot 擁有者才能操作按鈕"""
-        is_owner = await self.cog.bot.is_owner(interaction.user)
-        if interaction.user.id == BYPASS_USER_ID or is_owner:
-            return True
-        await interaction.response.send_message("❌ 您沒有權限操作總控中心！", ephemeral=True)
-        return False
+        try:
+            is_owner = await self.cog.bot.is_owner(interaction.user)
+            if interaction.user.id == BYPASS_USER_ID or is_owner:
+                return True
+            try:
+                await interaction.response.send_message("❌ 您沒有權限操作總控中心！", ephemeral=True)
+            except Exception:
+                pass
+            return False
+        except Exception:
+            return False
 
     @discord.ui.button(label="強制 1 號 Active", style=discord.ButtonStyle.primary, custom_id="force_wisp1")
     async def force_wisp1(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -105,14 +111,27 @@ class DiscordControl(commands.Cog):
 
     async def handle_control_action(self, interaction: discord.Interaction, action: str, target: str):
         """處理按鈕點擊互動"""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.NotFound, discord.HTTPException) as err:
+            print(f"⚠️ 總控按鈕回應超時或無效 (可能因網路延遲或已過期): {err}")
+            return
+
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
-            return await interaction.followup.send("❌ 找不到協調頻道！", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ 找不到協調頻道！", ephemeral=True)
+            except Exception:
+                pass
+            return
             
         message = await self.get_coordination_message(channel)
         if not message:
-            return await interaction.followup.send("❌ 找不到總控面板訊息！", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ 找不到總控面板訊息！", ephemeral=True)
+            except Exception:
+                pass
+            return
 
         # 解析當前狀態
         data = self.parse_footer_data(message)
@@ -132,9 +151,12 @@ class DiscordControl(commands.Cog):
             msg_text = f"已向 `{target}` 發送程式碼同步要求，主機在下次心跳時會從 GitHub 拉取並安全重啟。"
 
         # 編輯更新 Embed
-        new_embed = self.build_embed(data)
-        await message.edit(embed=new_embed)
-        await interaction.followup.send(f"✅ 操作成功：{msg_text}", ephemeral=True)
+        try:
+            new_embed = self.build_embed(data)
+            await message.edit(embed=new_embed)
+            await interaction.followup.send(f"✅ 操作成功：{msg_text}", ephemeral=True)
+        except Exception as e:
+            print(f"❌ 更新總控狀態或發送回應失敗: {e}")
 
     def parse_footer_data(self, message: discord.Message) -> dict:
         """解析 Embed Footer 裡儲存的 JSON 狀態資料"""

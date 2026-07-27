@@ -1015,8 +1015,12 @@ class Music(commands.Cog):
             view = AskListenView(self, message.author.id)
             await message.reply("好啊好啊你要聽歌的話", view=view)
 
-    def cog_unload(self):
+    async def cog_unload(self):
         self.controller_updater.cancel()
+        try:
+            await wavelink.Pool.close()
+        except Exception:
+            pass
 
     @tasks.loop(seconds=5)
     async def controller_updater(self):
