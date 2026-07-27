@@ -741,6 +741,165 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
         view = FakeURLView(hide_url_clean, real_url_clean)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TTS 文字轉語音指令
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @app_commands.command(name="tts", description="🔊 將文字轉換為語音並發送")
+    @app_commands.describe(
+        text="要轉換為語音的文字",
+        voice="選擇聲音角色（預設：臺灣中文曉臻）",
+        speed_tone="選擇語速與音調（預設：正常）",
+        interactive="是否啟用互動選單來調整（預設：True，若設為 False 則直接用參數生成）"
+    )
+    @app_commands.choices(
+        voice=[
+            app_commands.Choice(name="臺灣中文 - 曉臻 (女)", value="zh-TW-HsiaoChenNeural"),
+            app_commands.Choice(name="臺灣中文 - 雲哲 (男)", value="zh-TW-YunJheNeural"),
+            app_commands.Choice(name="美國英文 - Jenny (女)", value="en-US-JennyNeural"),
+            app_commands.Choice(name="美國英文 - Guy (男)", value="en-US-GuyNeural"),
+            app_commands.Choice(name="日文 - Nanami (女)", value="ja-JP-NanamiNeural"),
+            app_commands.Choice(name="日文 - Keita (男)", value="ja-JP-KeitaNeural"),
+            app_commands.Choice(name="韓文 - SunHi (女)", value="ko-KR-SunHiNeural"),
+            app_commands.Choice(name="粵語 (香港) - 曉佳 (女)", value="zh-HK-HiuGaaiNeural"),
+            app_commands.Choice(name="大陸普通話 - 曉曉 (女)", value="zh-CN-XiaoxiaoNeural"),
+            app_commands.Choice(name="大陸普通話 - 雲希 (男)", value="zh-CN-YunxiNeural")
+        ],
+        speed_tone=[
+            app_commands.Choice(name="正常速度 / 正常音調", value="normal_normal"),
+            app_commands.Choice(name="較快速度 (+20%) / 正常音調", value="fast_normal"),
+            app_commands.Choice(name="較慢速度 (-20%) / 正常音調", value="slow_normal"),
+            app_commands.Choice(name="正常速度 / 較高音調 (+10Hz)", value="normal_high"),
+            app_commands.Choice(name="正常速度 / 較低音調 (-10Hz)", value="normal_low"),
+            app_commands.Choice(name="較快速度 (+20%) / 較高音調 (+10Hz)", value="fast_high"),
+            app_commands.Choice(name="較慢速度 (-20%) / 較低音調 (-10Hz)", value="slow_low")
+        ]
+    )
+    async def tts(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+        voice: str = None,
+        speed_tone: str = None,
+        interactive: bool = True
+    ):
+        # 限制字數
+        is_ultra = await self.bot.db.is_guild_ultra(interaction.guild_id) if hasattr(self.bot, "db") else False
+        is_pro = await self.bot.db.is_guild_pro(interaction.guild_id) if hasattr(self.bot, "db") else False
+        
+        if is_ultra:
+            max_len = 1000
+        elif is_pro:
+            max_len = 500
+        else:
+            max_len = 200
+
+        if len(text) > max_len:
+            return await interaction.response.send_message(
+                embed=EmbedFactory.error("文字長度超出限制", f"您輸入的文字長度為 `{len(text)}` 字，超出了限制 `{max_len}` 字。\n（普通伺服器限制 200 字，Pro 500 字，Ultra 1000 字）"),
+                ephemeral=True
+            )
+
+        # 如果使用者指定了語音或音調，或是將互動設為 False，則直接生成
+        if not interactive or voice is not None or speed_tone is not None:
+            await interaction.response.defer()
+            
+            use_voice = voice or "zh-TW-HsiaoChenNeural"
+            use_speed_tone = speed_tone or "normal_normal"
+            
+            speed_tone_map = {
+                "normal_normal": ("+0%", "+0Hz"),
+                "fast_normal": ("+20%", "+0Hz"),
+                "slow_normal": ("-20%", "+0Hz"),
+                "normal_high": ("+0%", "+10Hz"),
+                "normal_low": ("+0%", "-10Hz"),
+                "fast_high": ("+20%", "+10Hz"),
+                "slow_low": ("-20%", "-10Hz")
+            }
+            rate, pitch = speed_tone_map.get(use_speed_tone, ("+0%", "+0Hz"))
+            
+            try:
+                import edge_tts
+                communicate = edge_tts.Communicate(text, use_voice, rate=rate, pitch=pitch)
+                data = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        data += chunk["data"]
+                
+                if not data:
+                    raise Exception("生成之音訊長度為 0 或是失敗")
+                    
+                import io
+                fp = io.BytesIO(data)
+                fp.seek(0)
+                
+                # 取得選定的 Voice & Tone 的顯示名稱
+                voice_dict = {
+                    "zh-TW-HsiaoChenNeural": "臺灣中文 - 曉臻 (女)",
+                    "zh-TW-YunJheNeural": "臺灣中文 - 雲哲 (男)",
+                    "zh-TW-HsiaoYuNeural": "臺灣中文 - 曉雨 (女)",
+                    "zh-CN-XiaoxiaoNeural": "大陸普通話 - 曉曉 (女)",
+                    "zh-CN-YunxiNeural": "大陸普通話 - 雲希 (男)",
+                    "zh-CN-YunjianNeural": "大陸普通話 - 雲健 (男)",
+                    "zh-HK-HiuGaaiNeural": "粵語 (香港) - 曉佳 (女)",
+                    "zh-HK-WanLungNeural": "粵語 (香港) - 雲龍 (男)",
+                    "en-US-JennyNeural": "美國英文 - Jenny (女)",
+                    "en-US-GuyNeural": "美國英文 - Guy (男)",
+                    "en-US-AriaNeural": "美國英文 - Aria (女)",
+                    "en-GB-SoniaNeural": "英國英文 - Sonia (女)",
+                    "en-GB-RyanNeural": "英國英文 - Ryan (男)",
+                    "ja-JP-NanamiNeural": "日文 - Nanami (女)",
+                    "ja-JP-KeitaNeural": "日文 - Keita (男)",
+                    "ko-KR-SunHiNeural": "韓文 - SunHi (女)",
+                    "ko-KR-InJoonNeural": "韓文 - InJoon (男)"
+                }
+                voice_label = voice_dict.get(use_voice, use_voice)
+                
+                tone_dict = {
+                    "normal_normal": "速度: 正常 | 音調: 正常",
+                    "fast_normal": "速度: 較快 (+20%) | 音調: 正常",
+                    "slow_normal": "速度: 較慢 (-20%) | 音調: 正常",
+                    "normal_high": "速度: 正常 | 音調: 較高 (+10Hz)",
+                    "normal_low": "速度: 正常 | 音調: 較低 (-10Hz)",
+                    "fast_high": "速度: 較快 (+20%) | 音調: 較高 (+10Hz)",
+                    "slow_low": "速度: 較慢 (-20%) | 音調: 較低 (-10Hz)"
+                }
+                tone_label = tone_dict.get(use_speed_tone, use_speed_tone)
+                
+                success_embed = discord.Embed(
+                    title="🎙️ TTS 文字轉語音產生器",
+                    color=Colors.SUCCESS
+                )
+                success_embed.add_field(name="**發音角色**", value=voice_label, inline=True)
+                success_embed.add_field(name="**語速音調**", value=tone_label, inline=True)
+                preview = text if len(text) <= 300 else text[:300] + "..."
+                success_embed.add_field(name="**唸的文字**", value=f"```{preview}```", inline=False)
+                success_embed.set_footer(text=f"語音已成功產生！")
+                
+                await interaction.followup.send(
+                    embed=success_embed,
+                    file=discord.File(fp, filename="tts.mp3")
+                )
+            except Exception as e:
+                await interaction.followup.send(
+                    embed=EmbedFactory.error("語音生成失敗", f"發生錯誤：`{str(e)}`")
+                )
+        else:
+            # 互動模式
+            view = TTSInteractiveView(text, interaction.user.id)
+            
+            embed = discord.Embed(
+                title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+                color=Colors.PRIMARY
+            )
+            embed.add_field(name="**發音角色**", value="臺灣中文 - 曉臻 (女)", inline=True)
+            embed.add_field(name="**語速音調**", value="速度: 正常 | 音調: 正常", inline=True)
+            preview = text if len(text) <= 300 else text[:300] + "..."
+            embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
+            embed.set_footer(text="選擇好後，點擊下方「🔊 開始生成語音」按鈕開始處理。")
+            
+            await interaction.response.send_message(embed=embed, view=view)
+
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # FakeURLView UI 元件 (發送偽造超連結到頻道)
@@ -1117,6 +1276,197 @@ def generate_nonsense(topic: str, min_len: int) -> str:
     return result
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TTS (Text-to-Speech) UI 元件
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TTSVoiceSelect(discord.ui.Select):
+    def __init__(self, current_voice: str):
+        options = [
+            discord.SelectOption(label="臺灣中文 - 曉臻 (女)", value="zh-TW-HsiaoChenNeural", description="台灣腔女聲 (預設)"),
+            discord.SelectOption(label="臺灣中文 - 雲哲 (男)", value="zh-TW-YunJheNeural", description="台灣腔男聲"),
+            discord.SelectOption(label="臺灣中文 - 曉雨 (女)", value="zh-TW-HsiaoYuNeural", description="台灣腔女聲 (曉雨)"),
+            discord.SelectOption(label="大陸普通話 - 曉曉 (女)", value="zh-CN-XiaoxiaoNeural", description="大陸普通話女聲"),
+            discord.SelectOption(label="大陸普通話 - 雲希 (男)", value="zh-CN-YunxiNeural", description="大陸普通話男聲"),
+            discord.SelectOption(label="大陸普通話 - 雲健 (男)", value="zh-CN-YunjianNeural", description="大陸普通話男聲 (雲健)"),
+            discord.SelectOption(label="粵語 (香港) - 曉佳 (女)", value="zh-HK-HiuGaaiNeural", description="廣東話女聲"),
+            discord.SelectOption(label="粵語 (香港) - 雲龍 (男)", value="zh-HK-WanLungNeural", description="廣東話男聲"),
+            discord.SelectOption(label="美國英文 - Jenny (女)", value="en-US-JennyNeural", description="美式英文女聲 (Jenny)"),
+            discord.SelectOption(label="美國英文 - Guy (男)", value="en-US-GuyNeural", description="美式英文男聲 (Guy)"),
+            discord.SelectOption(label="美國英文 - Aria (女)", value="en-US-AriaNeural", description="美式英文女聲 (Aria)"),
+            discord.SelectOption(label="英國英文 - Sonia (女)", value="en-GB-SoniaNeural", description="英式英文女聲 (Sonia)"),
+            discord.SelectOption(label="英國英文 - Ryan (男)", value="en-GB-RyanNeural", description="英式英文男聲 (Ryan)"),
+            discord.SelectOption(label="日文 - Nanami (女)", value="ja-JP-NanamiNeural", description="日語女聲"),
+            discord.SelectOption(label="日文 - Keita (男)", value="ja-JP-KeitaNeural", description="日語男聲"),
+            discord.SelectOption(label="韓文 - SunHi (女)", value="ko-KR-SunHiNeural", description="韓語女聲"),
+            discord.SelectOption(label="韓文 - InJoon (男)", value="ko-KR-InJoonNeural", description="韓語男聲"),
+            discord.SelectOption(label="法文 - Denise (女)", value="fr-FR-DeniseNeural", description="法文女聲"),
+            discord.SelectOption(label="法文 - Henri (男)", value="fr-FR-HenriNeural", description="法文男聲"),
+            discord.SelectOption(label="德文 - Katja (女)", value="de-DE-KatjaNeural", description="德文女聲"),
+            discord.SelectOption(label="德文 - Conrad (男)", value="de-DE-ConradNeural", description="德文男聲"),
+            discord.SelectOption(label="西班牙文 - Elvira (女)", value="es-ES-ElviraNeural", description="西班牙文女聲"),
+            discord.SelectOption(label="西班牙文 - Alvaro (男)", value="es-ES-AlvaroNeural", description="西班牙文男聲"),
+            discord.SelectOption(label="義大利文 - Elsa (女)", value="it-IT-ElsaNeural", description="義大利文女聲"),
+            discord.SelectOption(label="越南文 - HoaiMy (女)", value="vi-VN-HoaiMyNeural", description="越南文女聲")
+        ]
+        
+        for option in options:
+            if option.value == current_voice:
+                option.default = True
+                
+        super().__init__(
+            placeholder="選擇語音角色與語言...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_voice = self.values[0]
+        await self.view.update_embed(interaction)
+
+
+class TTSToneSelect(discord.ui.Select):
+    def __init__(self, current_tone: str):
+        options = [
+            discord.SelectOption(label="速度: 正常 | 音調: 正常", value="normal_normal", description="預設設定"),
+            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 正常", value="fast_normal", description="快語速"),
+            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 正常", value="slow_normal", description="慢語速"),
+            discord.SelectOption(label="速度: 正常 | 音調: 較高 (+10Hz)", value="normal_high", description="偏高音"),
+            discord.SelectOption(label="速度: 正常 | 音調: 較低 (-10Hz)", value="normal_low", description="偏低音"),
+            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 較高 (+10Hz)", value="fast_high", description="活潑愉快"),
+            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 較低 (-10Hz)", value="slow_low", description="低沉穩重")
+        ]
+        
+        for option in options:
+            if option.value == current_tone:
+                option.default = True
+                
+        super().__init__(
+            placeholder="選擇語速與音調...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_tone = self.values[0]
+        await self.view.update_embed(interaction)
+
+
+class TTSInteractiveView(discord.ui.View):
+    def __init__(self, text: str, user_id: int):
+        super().__init__(timeout=120)
+        self.text = text
+        self.user_id = user_id
+        self.selected_voice = "zh-TW-HsiaoChenNeural"
+        self.selected_tone = "normal_normal"
+        
+        self.voice_select = TTSVoiceSelect(self.selected_voice)
+        self.tone_select = TTSToneSelect(self.selected_tone)
+        self.add_item(self.voice_select)
+        self.add_item(self.tone_select)
+        
+    async def update_embed(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+            color=Colors.PRIMARY
+        )
+        
+        voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
+        tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
+        
+        embed.add_field(name="**發音角色**", value=voice_label, inline=True)
+        embed.add_field(name="**語速音調**", value=tone_label, inline=True)
+        
+        preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
+        embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
+        embed.set_footer(text="選擇好後，點擊下方「🔊 開始生成語音」按鈕開始處理。")
+        
+        for option in self.voice_select.options:
+            option.default = (option.value == self.selected_voice)
+        for option in self.tone_select.options:
+            option.default = (option.value == self.selected_tone)
+            
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ 這不是您的 TTS 產生器！", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🔊 開始生成語音", style=discord.ButtonStyle.success, row=2, custom_id="tts_generate_btn")
+    async def generate_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        speed_tone_map = {
+            "normal_normal": ("+0%", "+0Hz"),
+            "fast_normal": ("+20%", "+0Hz"),
+            "slow_normal": ("-20%", "+0Hz"),
+            "normal_high": ("+0%", "+10Hz"),
+            "normal_low": ("+0%", "-10Hz"),
+            "fast_high": ("+20%", "+10Hz"),
+            "slow_low": ("-20%", "-10Hz")
+        }
+        rate, pitch = speed_tone_map.get(self.selected_tone, ("+0%", "+0Hz"))
+        
+        for child in self.children:
+            child.disabled = True
+            
+        embed = discord.Embed(
+            title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+            color=Colors.WARNING,
+            description="⏳ 正在為您生成語音，請稍候..."
+        )
+        await interaction.edit_original_response(embed=embed, view=self)
+        
+        try:
+            import edge_tts
+            communicate = edge_tts.Communicate(self.text, self.selected_voice, rate=rate, pitch=pitch)
+            data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    data += chunk["data"]
+            
+            if not data:
+                raise Exception("生成之音訊長度為 0 或是失敗")
+                
+            import io
+            fp = io.BytesIO(data)
+            fp.seek(0)
+            
+            success_embed = discord.Embed(
+                title="🎙️ TTS 文字轉語音產生器",
+                color=Colors.SUCCESS
+            )
+            voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
+            tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
+            
+            success_embed.add_field(name="**發音角色**", value=voice_label, inline=True)
+            success_embed.add_field(name="**語速音調**", value=tone_label, inline=True)
+            preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
+            success_embed.add_field(name="**唸的文字**", value=f"```{preview}```", inline=False)
+            success_embed.set_footer(text=f"語音已成功產生！")
+            
+            await interaction.edit_original_response(
+                embed=success_embed,
+                view=self,
+                attachments=[discord.File(fp, filename="tts.mp3")]
+            )
+            
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ 語音生成失敗",
+                description=f"發生錯誤：`{str(e)}`",
+                color=Colors.ERROR
+            )
+            await interaction.edit_original_response(embed=error_embed, view=self)
+
+
 async def setup(bot: commands.Bot):
+
     await bot.add_cog(Tools(bot))
 
