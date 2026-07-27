@@ -27,13 +27,20 @@ class RoleClaim(commands.Cog):
     @commands.group(name="gro", invoke_without_command=True)
     @commands.guild_only()
     @commands.has_permissions(manage_roles=True)
-    async def gro(self, ctx: commands.Context, role: discord.Role, *, description_or_color: str = None):
-        """建立身分組領取面板 (.gro @身分組 [顏色] [自訂說明文字])"""
+    async def gro(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], *, description_or_color: str = None):
+        """建立身分組領取面板 (.gro @身分組1 [@身分組2 ...] [顏色] [說明文字])"""
         await ctx.message.delete()
 
+        if not roles:
+            return await ctx.send(
+                "❌ 請提供至少一個有效的身分組！\n💡 使用格式：`.gro @身分組1 [@身分組2 ...] [顏色] [說明文字]`",
+                delete_after=7
+            )
+
         # 檢查機器人身分組階層是否足夠
-        if ctx.guild.me.top_role <= role:
-            return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {role.name} 才能建立領取按鈕！", delete_after=5)
+        for r in roles:
+            if ctx.guild.me.top_role <= r:
+                return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {r.name} 才能建立領取按鈕！", delete_after=5)
 
         style = discord.ButtonStyle.primary
         description = "點擊下方按鈕以領取或取消對應的身分組："
@@ -48,33 +55,44 @@ class RoleClaim(commands.Cog):
             else:
                 description = description_or_color
 
+        # 建立身分組提及列表
+        role_mentions = "\n".join([f"• {r.mention}" for r in roles])
+
         embed = discord.Embed(
             title="🏷️ 身分組領取中心",
-            description=f"{description}\n\n• {role.mention}",
-            color=role.color if role.color != discord.Color.default() else Colors.PRIMARY
+            description=f"{description}\n\n{role_mentions}",
+            color=roles[0].color if roles[0].color != discord.Color.default() else Colors.PRIMARY
         )
         
         view = discord.ui.View(timeout=None)
-        btn = discord.ui.Button(
-            style=style,
-            label=role.name,
-            custom_id=f"claim_role_{role.id}",
-            emoji="🏷️"
-        )
-        view.add_item(btn)
+        for r in roles:
+            btn = discord.ui.Button(
+                style=style,
+                label=r.name,
+                custom_id=f"claim_role_{r.id}",
+                emoji="🏷️"
+            )
+            view.add_item(btn)
 
         await ctx.send(embed=embed, view=view)
 
     @gro.command(name="a")
     @commands.guild_only()
     @commands.has_permissions(manage_roles=True)
-    async def add_role(self, ctx: commands.Context, role: discord.Role, color: str = "blue"):
-        """新增身分組按鈕到現有的領取面板 (.gro a @身分組 [顏色])"""
+    async def add_role(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], color: str = "blue"):
+        """新增身分組按鈕到現有的領取面板 (.gro a @身分組1 [@身分組2 ...] [顏色])"""
         await ctx.message.delete()
 
+        if not roles:
+            return await ctx.send(
+                "❌ 請提供至少一個要新增的有效身分組！\n💡 使用格式：`.gro a @身分組1 [@身分組2 ...] [顏色]`",
+                delete_after=7
+            )
+
         # 檢查機器人身分組階層是否足夠
-        if ctx.guild.me.top_role <= role:
-            return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {role.name} 才能建立領取按鈕！", delete_after=5)
+        for r in roles:
+            if ctx.guild.me.top_role <= r:
+                return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {r.name} 才能建立領取按鈕！", delete_after=5)
 
         color_lower = color.lower()
         if color_lower not in STYLE_MAP:
@@ -104,7 +122,6 @@ class RoleClaim(commands.Cog):
         if not found_msg:
             return await ctx.send("❌ 找不到在此頻道發送的「身分組領取中心」訊息！", delete_after=5)
 
-        target_custom_id = f"claim_role_{role.id}"
         existing_role_ids = []
         view = discord.ui.View(timeout=None)
 
@@ -122,37 +139,51 @@ class RoleClaim(commands.Cog):
                     )
                     view.add_item(btn)
 
-        if role.id in existing_role_ids:
-            return await ctx.send(f"⚠️ 身分組 {role.name} 已經在領取列表中了！", delete_after=5)
+        new_added_roles = []
+        for r in roles:
+            if r.id in existing_role_ids:
+                continue
+            if len(view.children) >= 25:
+                await ctx.send("❌ 該訊息的領取按鈕已達上限（25 個），部分身分組未加入！", delete_after=5)
+                break
+                
+            new_btn = discord.ui.Button(
+                style=style,
+                label=r.name,
+                custom_id=f"claim_role_{r.id}",
+                emoji="🏷️"
+            )
+            view.add_item(new_btn)
+            new_added_roles.append(r)
 
-        if len(view.children) >= 25:
-            return await ctx.send("❌ 該訊息的領取按鈕已達上限（25 個）！", delete_after=5)
+        if not new_added_roles:
+            return await ctx.send("⚠️ 所有指定的身分組都已在列表中，或按鈕數已達上限！", delete_after=5)
 
-        # 新增按鈕
-        new_btn = discord.ui.Button(
-            style=style,
-            label=role.name,
-            custom_id=target_custom_id,
-            emoji="🏷️"
-        )
-        view.add_item(new_btn)
-
-        # 更新 Embed 說明
+        # 更新 Embed 說明與按鈕
         embed = found_msg.embeds[0]
         desc = embed.description or ""
-        if f"• {role.mention}" not in desc:
-            embed.description = desc + f"\n• {role.mention}"
+        for r in new_added_roles:
+            if f"• {r.mention}" not in desc:
+                desc += f"\n• {r.mention}"
+        embed.description = desc
 
         await found_msg.edit(embed=embed, view=view)
-        await ctx.send(f"✅ 已成功將 {role.name} 新增至領取列表！", delete_after=5)
+        added_names = ", ".join([r.name for r in new_added_roles])
+        await ctx.send(f"✅ 已成功新增身分組：{added_names} 至領取列表！", delete_after=5)
 
     @gro.command(name="c", aliases=["color", "style"])
     @commands.guild_only()
     @commands.has_permissions(manage_roles=True)
-    async def change_color(self, ctx: commands.Context, role: discord.Role, color: str):
-        """編輯按鈕的顏色 (.gro c @身分組 顏色)"""
+    async def change_color(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], color: str):
+        """編輯按鈕的顏色 (.gro c @身分組1 [@身分組2 ...] 顏色)"""
         await ctx.message.delete()
         
+        if not roles:
+            return await ctx.send(
+                "❌ 請提供至少一個要修改顏色的有效身分組！\n💡 使用格式：`.gro c @身分組1 [@身分組2 ...] 顏色`",
+                delete_after=7
+            )
+
         color_lower = color.lower()
         if color_lower not in STYLE_MAP:
             return await ctx.send(
@@ -182,17 +213,19 @@ class RoleClaim(commands.Cog):
         if not found_msg:
             return await ctx.send("❌ 找不到在此頻道發送的「身分組領取中心」訊息！", delete_after=5)
 
-        target_custom_id = f"claim_role_{role.id}"
-        button_updated = False
+        target_ids = [r.id for r in roles]
         view = discord.ui.View(timeout=None)
+        updated_count = 0
 
         # 重新建立按鈕並修改目標按鈕顏色
         for row in found_msg.components:
             for item in row.children:
                 if item.custom_id and item.custom_id.startswith("claim_role_"):
-                    if item.custom_id == target_custom_id:
+                    r_id = int(item.custom_id.replace("claim_role_", ""))
+                    
+                    if r_id in target_ids:
                         btn_style = style
-                        button_updated = True
+                        updated_count += 1
                     else:
                         btn_style = item.style
                         
@@ -204,11 +237,11 @@ class RoleClaim(commands.Cog):
                     )
                     view.add_item(btn)
 
-        if not button_updated:
-            return await ctx.send(f"❌ 身分組 {role.name} 的按鈕不存在於該面板上！", delete_after=5)
+        if updated_count == 0:
+            return await ctx.send("❌ 指定的身分組按鈕均不存在於該面板上！", delete_after=5)
 
         await found_msg.edit(view=view)
-        await ctx.send(f"✅ 已成功將 {role.name} 按鈕顏色更新為 `{color_lower}`！", delete_after=5)
+        await ctx.send(f"✅ 已成功將 {updated_count} 個身分組按鈕顏色更新為 `{color_lower}`！", delete_after=5)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
