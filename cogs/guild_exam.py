@@ -1,0 +1,1110 @@
+"""
+限定伺服器 (1472826730300309629) 專屬完整考試系統 Cog
+"""
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+import json
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List
+
+from config import Colors, Emoji
+from utils.embeds import EmbedFactory
+
+TARGET_GUILD_ID = 1472826730300309629
+ROLE_APPLICANT = 1478335180069671044   # 一般考試通過後新增的角色組 (核心成員)
+ROLE_EXAMINER = 1478335180069671044    # 考官角色組在名單中也是需要管理的 (使用者要求考官通過後獲得的角色組 1489513038699827270)
+ROLE_COACH = 1489513038699827270       # 考考官通過後獲得的角色組
+ROLE_YOUTUBE = 1477119651182805005     # 考考官需擁有的 YouTube 角色組
+BYPASS_USER_ID = 1437408048934027274   # 團長 ID
+
+# 預設考官名單 (在資料表為空時初始化)
+DEFAULT_EXAMINERS = [
+    # user_id, knife, rifle, sniper
+    (1252446151475466241, 1, 0, 0),  # 小刀考官
+    (1438132914712744009, 1, 0, 0),  # 小刀考官
+    (1414070624795758732, 1, 0, 1),  # 小刀、狙擊考官
+    (1476866853795004527, 1, 1, 1),  # 小刀、步槍、狙擊考官
+    (1421430913652494518, 1, 0, 0),  # 小刀考官
+    (1426607669283913738, 0, 0, 1),  # 狙擊考官
+    (1444634939541815347, 0, 1, 1),  # 步槍、狙擊考官
+    (1458091320764661922, 0, 1, 0),  # 步槍考官
+    (1437408048934027274, 1, 1, 1),  # 團長 (全能)
+]
+
+
+def is_guild_limited():
+    """檢查是否為指定伺服器的裝飾器"""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild_id != TARGET_GUILD_ID:
+            await interaction.response.send_message("❌ 此功能為限定伺服器的完整考試系統，其他伺服器無法使用！", ephemeral=True)
+            return False
+        return True
+    return app_commands.check(predicate)
+
+
+class ExamRegisterModal(discord.ui.Modal):
+    """報名輸入資料 Modal"""
+
+    def __init__(self, bot, category_id: int):
+        super().__init__(title="輸入您的考試報名資料")
+        self.bot = bot
+        self.category_id = category_id
+
+        self.level = discord.ui.TextInput(
+            label="遊戲等級 (Level)",
+            placeholder="請輸入您的等級，例如: 120",
+            required=True,
+            max_length=10
+        )
+        self.win_rate = discord.ui.TextInput(
+            label="勝率 (Win Rate)",
+            placeholder="請輸入您的勝率，例如: 58% 或 0.58",
+            required=True,
+            max_length=15
+        )
+        self.rank = discord.ui.TextInput(
+            label="遊戲牌位 (Rank)",
+            placeholder="請輸入您的牌位，例如: 金牌、傳奇",
+            required=True,
+            max_length=20
+        )
+
+        self.add_item(self.level)
+        self.add_item(self.win_rate)
+        self.add_item(self.rank)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        db = self.bot.db.db
+        guild = interaction.guild
+
+        # 遞增 Ticket 計數器
+        await db.execute(
+            "INSERT OR IGNORE INTO guild_exam_settings (guild_id) VALUES (?)",
+            (guild.id,)
+        )
+        await db.execute(
+            "UPDATE guild_exam_settings SET ticket_counter = ticket_counter + 1 WHERE guild_id = ?",
+            (guild.id,)
+        )
+        await db.commit()
+
+        async with db.execute(
+            "SELECT ticket_counter FROM guild_exam_settings WHERE guild_id = ?",
+            (guild.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            counter = row[0] if row else 1
+
+        # 建立開票頻道
+        category = guild.get_channel(self.category_id)
+        if not category or not isinstance(category, discord.CategoryChannel):
+            return await interaction.followup.send("❌ 找不到開票類別頻道，請管理員重新設定！", ephemeral=True)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+        }
+
+        # 獲取所有考官，也讓他們可以看到頻道以利接單
+        async with db.execute("SELECT user_id FROM guild_examiners") as cursor:
+            examiners = await cursor.fetchall()
+            for r in examiners:
+                examiner_member = guild.get_member(r[0])
+                if examiner_member:
+                    overwrites[examiner_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        # 確保團長也有權限
+        bypass_member = guild.get_member(BYPASS_USER_ID)
+        if bypass_member:
+            overwrites[bypass_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        channel_name = f"ticket-{counter:03d}"
+        ticket_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            reason=f"考生 {interaction.user.name} 開放考試"
+        )
+
+        # 記錄至 database
+        now_str = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "INSERT INTO guild_exam_tickets (channel_id, user_id, level, win_rate, rank, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ticket_channel.id, interaction.user.id, self.level.value, self.win_rate.value, self.rank.value, 'waiting_select', now_str)
+        )
+        await db.commit()
+
+        # 發送歡迎訊息與下拉選單
+        welcome_embed = discord.Embed(
+            title="🎫 考試頻道已建立",
+            description=f"歡迎 {interaction.user.mention} 來到您的專屬考試頻道！",
+            color=Colors.PRIMARY
+        )
+        welcome_embed.add_field(name="等級", value=self.level.value, inline=True)
+        welcome_embed.add_field(name="勝率", value=self.win_rate.value, inline=True)
+        welcome_embed.add_field(name="牌位", value=self.rank.value, inline=True)
+        welcome_embed.add_field(
+            name="說明",
+            value="請在下方選單中選擇您要考的項目。\n普通考試**必須選擇 2 個項目**；\n若要考考官，請**只選擇 1 個『考考官』項目**（需擁有 YouTube 身份組）。",
+            inline=False
+        )
+
+        view = TicketInitView(self.bot, ticket_channel.id, interaction.user.id)
+        await ticket_channel.send(content=interaction.user.mention, embed=welcome_embed, view=view)
+
+        await interaction.followup.send(f"✅ 您的專屬考試頻道已經建立：{ticket_channel.mention}", ephemeral=True)
+
+
+class TicketInitView(discord.ui.View):
+    """Ticket 頻道內的第一步：選單"""
+
+    def __init__(self, bot, channel_id: int, user_id: int):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.channel_id = channel_id
+        self.user_id = user_id
+
+        # 新增多選下拉選單 (支援選 1~2 個項目)
+        self.add_item(ExamTypeSelect(bot, channel_id, user_id))
+
+
+class ExamTypeSelect(discord.ui.Select):
+    """考試項目下拉選單 (多選 1~2 個)"""
+
+    def __init__(self, bot, channel_id: int, user_id: int):
+        self.bot = bot
+        self.channel_id = channel_id
+        self.user_id = user_id
+
+        options = [
+            discord.SelectOption(label="小刀", value="小刀", emoji="🔪", description="進行小刀考試項目"),
+            discord.SelectOption(label="步槍", value="步槍", emoji="🔫", description="進行步槍考試項目"),
+            discord.SelectOption(label="狙擊", value="狙擊", emoji="🎯", description="進行狙擊考試項目"),
+            discord.SelectOption(label="考考官", value="考考官", emoji="👑", description="申請成為考官（需有 YouTube 角色組）"),
+        ]
+
+        super().__init__(
+            placeholder="請選擇考試項目 (可選擇 1~2 個)...",
+            min_values=1,
+            max_values=2,
+            options=options,
+            custom_id=f"guild_exam:select:{channel_id}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ 只有考生本人可以選擇項目！", ephemeral=True)
+
+        selected = self.values
+
+        # 防呆與規則檢查
+        if "考考官" in selected:
+            if len(selected) > 1:
+                return await interaction.response.send_message("❌ 選擇「考考官」時不能再與其他項目混選，請只勾選「考考官」！", ephemeral=True)
+
+            # 檢查 YouTube 角色組
+            role = interaction.guild.get_role(ROLE_YOUTUBE)
+            if not role or role not in interaction.user.roles:
+                return await interaction.response.send_message(f"❌ 只有擁有 <@&{ROLE_YOUTUBE}> 角色組的成員才能考考官！", ephemeral=True)
+        else:
+            if len(selected) != 2:
+                return await interaction.response.send_message("❌ 普通考試請剛好選擇 2 個項目！(例如小刀 + 步槍)", ephemeral=True)
+
+        await interaction.response.defer()
+        db = self.bot.db.db
+
+        # 更新 Ticket 狀態與項目
+        exam_types_str = json.dumps(selected, ensure_ascii=False)
+        now_str = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE guild_exam_tickets SET exam_types = ?, status = 'waiting_examiner', assigned_time = ? WHERE channel_id = ?",
+            (exam_types_str, now_str, self.channel_id)
+        )
+        await db.commit()
+
+        # 禁用選單並編輯原訊息
+        self.disabled = True
+        self.placeholder = f"已選擇項目: {', '.join(selected)}"
+        await interaction.message.edit(view=self.view)
+
+        # 執行考官配對與 ping 流程
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.assign_examiner(interaction.channel, selected)
+
+
+class ExaminerAcceptView(discord.ui.View):
+    """考官接單 View"""
+
+    def __init__(self, bot, ticket_channel_id: int, match_examiners: List[int], allowed_roles: List[str]):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.ticket_channel_id = ticket_channel_id
+        self.match_examiners = match_examiners  # 符合項目的考官 ID 列表
+        self.allowed_roles = allowed_roles      # 包含的項目
+
+    @discord.ui.button(
+        label="接單 (我在)",
+        style=discord.ButtonStyle.success,
+        emoji="🙋‍♂️",
+        custom_id="guild_exam:accept_btn"
+    )
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        db = self.bot.db.db
+
+        # 驗證按按鈕者是否為符合條件的考官或超級管理員
+        is_allowed = interaction.user.id in self.match_examiners or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator
+        if not is_allowed:
+            return await interaction.response.send_message("❌ 您不是此考試項目的符合考官，無法接單！", ephemeral=True)
+
+        await interaction.response.defer()
+
+        # 更新資料庫狀態
+        await db.execute(
+            "UPDATE guild_exam_tickets SET assigned_examiner_id = ?, status = 'testing' WHERE channel_id = ?",
+            (interaction.user.id, self.ticket_channel_id)
+        )
+        await db.commit()
+
+        # 停用按鈕並編輯
+        self.clear_items()
+        await interaction.message.edit(content=f"✅ **已由 {interaction.user.mention} 接單主持考試**", view=self)
+
+        # 發送考試規則
+        rules_embed = discord.Embed(title="📜 考試規則說明", color=Colors.PRIMARY)
+        rules_embed.add_field(
+            name="💡 正常考試規則",
+            value=(
+                "🔹 **突擊步槍**：至少要打到 4 分\n"
+                "🔹 **小刀**：5 分\n"
+                "🔹 **狙擊**：5 分\n"
+                "🔹 **任意武器**：5 分\n"
+                "🔹 **考官指定武器**：4 分\n"
+                "🔹 **隨機武器**：4 分\n"
+                "📌 *全都要打，並與每個考官打 (需自行安排時間)*"
+            ),
+            inline=False
+        )
+        rules_embed.add_field(
+            name="⚡ 臨時考試規則 (考官忙碌時採取)",
+            value=(
+                "🔸 **突擊步槍**：至少要打到 4 分\n"
+                "🔸 **小刀**：5 分\n"
+                "🔸 **狙擊**：4 分\n"
+                "🔸 **任意武器**：5 分\n"
+                "🔸 **考官指定武器**：3 分\n"
+                "🔸 **隨機武器**：3 分"
+            ),
+            inline=False
+        )
+        rules_embed.set_footer(text="請考官與考生開始進行考試。結束後考官請輸入「關單」、「close」或「結束考試」來結算成績。")
+
+        # 建立考官結算控制面板
+        view = ExaminerActionView(self.bot, self.ticket_channel_id, interaction.user.id)
+        await interaction.channel.send(embed=rules_embed, view=view)
+
+
+class ExaminerActionView(discord.ui.View):
+    """考官操作結算 View"""
+
+    def __init__(self, bot, ticket_channel_id: int, examiner_id: int):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.ticket_channel_id = ticket_channel_id
+        self.examiner_id = examiner_id
+
+    @discord.ui.button(
+        label="結算/關閉考試",
+        style=discord.ButtonStyle.danger,
+        emoji="🔒",
+        custom_id="guild_exam:close_action_btn"
+    )
+    async def close_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 驗證操作者權限
+        is_allowed = interaction.user.id == self.examiner_id or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator
+        if not is_allowed:
+            return await interaction.response.send_message("❌ 只有主考官或管理員可以結算考試！", ephemeral=True)
+
+        await interaction.response.defer()
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.prompt_settlement(interaction.channel, self.ticket_channel_id)
+
+
+class SettlementView(discord.ui.View):
+    """結算選項 View"""
+
+    def __init__(self, bot, ticket_channel_id: int, examiner_id: int):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.ticket_channel_id = ticket_channel_id
+        self.examiner_id = examiner_id
+
+    @discord.ui.button(label="過 (Pass)", style=discord.ButtonStyle.success, emoji="✅", custom_id="guild_exam:pass")
+    async def pass_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not (interaction.user.id == self.examiner_id or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator):
+            return await interaction.response.send_message("❌ 您無權限操作此結算！", ephemeral=True)
+
+        await interaction.response.defer()
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.settle_result(interaction, self.ticket_channel_id, "pass")
+            self.stop()
+
+    @discord.ui.button(label="沒過 (Fail)", style=discord.ButtonStyle.danger, emoji="❌", custom_id="guild_exam:fail")
+    async def fail_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not (interaction.user.id == self.examiner_id or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator):
+            return await interaction.response.send_message("❌ 您無權限操作此結算！", ephemeral=True)
+
+        await interaction.response.defer()
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.settle_result(interaction, self.ticket_channel_id, "fail")
+            self.stop()
+
+    @discord.ui.button(label="直接關單 (無紀錄)", style=discord.ButtonStyle.secondary, emoji="🗑️", custom_id="guild_exam:direct_close")
+    async def direct_close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not (interaction.user.id == self.examiner_id or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator):
+            return await interaction.response.send_message("❌ 您無權限操作此結算！", ephemeral=True)
+
+        await interaction.response.defer()
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.settle_result(interaction, self.ticket_channel_id, "direct_close")
+            self.stop()
+
+
+class ExaminerTypeSelectView(discord.ui.View):
+    """考官類型指派 View"""
+
+    def __init__(self, bot, member: discord.Member, ticket_channel_id: int):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.member = member
+        self.ticket_channel_id = ticket_channel_id
+
+    @discord.ui.select(
+        placeholder="選擇新考官的擅長項目 (可多選)...",
+        min_values=1,
+        max_values=3,
+        options=[
+            discord.SelectOption(label="小刀考官", value="knife", emoji="🔪"),
+            discord.SelectOption(label="步槍考官", value="rifle", emoji="🔫"),
+            discord.SelectOption(label="狙擊考官", value="sniper", emoji="🎯"),
+        ],
+        custom_id="guild_exam:assign_examiner_types"
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await interaction.response.defer()
+        db = self.bot.db.db
+
+        knife = 1 if "knife" in select.values else 0
+        rifle = 1 if "rifle" in select.values else 0
+        sniper = 1 if "sniper" in select.values else 0
+
+        # 寫入或更新考官資料庫
+        await db.execute(
+            "INSERT OR REPLACE INTO guild_examiners (user_id, knife, rifle, sniper) VALUES (?, ?, ?, ?)",
+            (self.member.id, knife, rifle, sniper)
+        )
+        await db.commit()
+
+        await interaction.channel.send(f"✅ 已成功將 {self.member.mention} 登記為對應項目考官！")
+        
+        # 觸發戰隊名單更新
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.update_member_list(interaction.guild)
+
+        # 進行最後清理
+        await interaction.channel.send("🧹 結算與登錄完畢，本頻道將在 5 秒後刪除...")
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
+        self.stop()
+
+
+class DeployGuildExamView(discord.ui.View):
+    """考試面板 Deploy 視圖"""
+
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="開始考試",
+        style=discord.ButtonStyle.success,
+        emoji="📝",
+        custom_id="guild_exam:deploy_start"
+    )
+    async def start_exam(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild_id != TARGET_GUILD_ID:
+            return await interaction.response.send_message("❌ 此功能為限定伺服器的完整考試系統，其他伺服器無法使用！", ephemeral=True)
+
+        db = self.bot.db.db
+        
+        # 檢查設定
+        async with db.execute(
+            "SELECT category_id FROM guild_exam_settings WHERE guild_id = ?",
+            (interaction.guild.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or not row[0]:
+                return await interaction.response.send_message("❌ 尚未設定開票類別頻道，請管理員使用 `/exam-guild-setup` 設定！", ephemeral=True)
+            category_id = row[0]
+
+        # 檢查是否有進行中的 ticket
+        async with db.execute(
+            "SELECT channel_id FROM guild_exam_tickets WHERE user_id = ? AND status != 'completed' AND status != 'failed'",
+            (interaction.user.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                chan = interaction.guild.get_channel(row[0])
+                if chan:
+                    return await interaction.response.send_message(f"❌ 您已建立了一個考試頻道：{chan.mention}，請前往完成考試！", ephemeral=True)
+                else:
+                    # 頻道已不存在但 DB 還有紀錄時清理
+                    await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (row[0],))
+                    await db.commit()
+
+        # 彈出 Modal
+        modal = ExamRegisterModal(self.bot, category_id)
+        await interaction.response.send_modal(modal)
+
+
+class GuildExam(commands.Cog):
+    """限定伺服器 (1472826730300309629) 專屬完整考試系統"""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.check_tickets_loop.start()
+
+    def cog_unload(self):
+        self.check_tickets_loop.cancel()
+
+    async def cog_load(self):
+        # 註冊持久化按鈕
+        self.bot.add_view(DeployGuildExamView(self.bot))
+        await self.init_db()
+
+    async def init_db(self):
+        """建立資料表與初始化預設考官"""
+        db = self.bot.db.db
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS guild_exam_settings (
+                guild_id INTEGER PRIMARY KEY,
+                panel_channel_id INTEGER,
+                category_id INTEGER,
+                member_channel_id INTEGER,
+                ticket_counter INTEGER DEFAULT 0,
+                member_list_message_id INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS guild_exam_tickets (
+                channel_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                level TEXT,
+                win_rate TEXT,
+                rank TEXT,
+                exam_types TEXT,
+                assigned_examiner_id INTEGER,
+                assigned_time TEXT,
+                status TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS guild_examiners (
+                user_id INTEGER PRIMARY KEY,
+                knife INTEGER DEFAULT 0,
+                rifle INTEGER DEFAULT 0,
+                sniper INTEGER DEFAULT 0
+            );
+        """)
+        await db.commit()
+
+        # 如果考官表為空，寫入預設考官
+        async with db.execute("SELECT COUNT(*) FROM guild_examiners") as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == 0:
+                for uid, k, r, s in DEFAULT_EXAMINERS:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO guild_examiners (user_id, knife, rifle, sniper) VALUES (?, ?, ?, ?)",
+                        (uid, k, r, s)
+                    )
+                await db.commit()
+                print("✅ 已成功初始化預設考官名單")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 背景循環任務：24 小時未接單輪替與 10 天無活動自動清理
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @tasks.loop(minutes=10)
+    async def check_tickets_loop(self):
+        guild = self.bot.get_guild(TARGET_GUILD_ID)
+        if not guild:
+            return
+
+        db = self.bot.db.db
+        now = datetime.now(timezone.utc)
+
+        # 1. 查詢所有待處理的 Ticket
+        async with db.execute(
+            "SELECT channel_id, user_id, exam_types, assigned_time, status, created_at FROM guild_exam_tickets WHERE status != 'completed' AND status != 'failed'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            channel_id, user_id, exam_types_json, assigned_time_str, status, created_at_str = row
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                # 頻道已手動刪除，從資料庫中移除
+                await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
+                await db.commit()
+                continue
+
+            # A. 24 小時無考官接單輪替
+            if status == 'waiting_examiner' and assigned_time_str:
+                assigned_time = datetime.fromisoformat(assigned_time_str)
+                if now - assigned_time >= timedelta(hours=24):
+                    # 超過 24 小時，重新指派
+                    try:
+                        exam_types = json.loads(exam_types_json)
+                        await channel.send("⏰ 由於接單期限已過 (24小時無考官接單)，系統正在重新為您尋找其他在線考官...")
+                        await self.assign_examiner(channel, exam_types)
+                    except Exception as e:
+                        print(f"Error re-assigning examiners for channel {channel_id}: {e}")
+
+            # B. 10 天無活動自動關閉
+            try:
+                last_activity = None
+                # 讀取最後一條訊息
+                async for message in channel.history(limit=1):
+                    last_activity = message.created_at
+
+                # 如果沒有任何訊息，則以建立時間為準
+                if not last_activity and created_at_str:
+                    last_activity = datetime.fromisoformat(created_at_str)
+
+                if last_activity:
+                    # 轉換為 offsets-aware 統一時區比對
+                    if last_activity.tzinfo is None:
+                        last_activity = last_activity.replace(tzinfo=timezone.utc)
+                    else:
+                        last_activity = last_activity.astimezone(timezone.utc)
+
+                    if now - last_activity >= timedelta(days=10):
+                        await channel.send("⏰ 此 Ticket 頻道由於 10 天內無任何新對話與活動，系統將進行自動清理與關閉。")
+                        await asyncio.sleep(5)
+                        try:
+                            await channel.delete()
+                        except Exception:
+                            pass
+                        await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
+                        await db.commit()
+            except Exception as e:
+                print(f"Error checking inactivity for channel {channel_id}: {e}")
+
+    @check_tickets_loop.before_loop
+    async def before_check_tickets_loop(self):
+        await self.bot.wait_until_ready()
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 考官配對與結算邏輯
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    async def assign_examiner(self, channel: discord.TextChannel, exam_types: List[str]):
+        """配對考官並在頻道中發送接單面板"""
+        db = self.bot.db.db
+        guild = channel.guild
+
+        # 找符合考試項目的考官
+        query = "SELECT user_id FROM guild_examiners WHERE "
+        conditions = []
+        if "小刀" in exam_types:
+            conditions.append("knife = 1")
+        if "步槍" in exam_types:
+            conditions.append("rifle = 1")
+        if "狙擊" in exam_types:
+            conditions.append("sniper = 1")
+        if "考考官" in exam_types or not conditions:
+            # 考考官預設找管理層/團長/副團/副副團
+            match_examiners = [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]
+        else:
+            query += " OR ".join(conditions)
+            async with db.execute(query) as cursor:
+                rows = await cursor.fetchall()
+                match_examiners = [r[0] for r in rows]
+
+        # 篩選在線 (online, idle, dnd) 的考官
+        online_examiners = []
+        for uid in match_examiners:
+            m = guild.get_member(uid)
+            if m and m.status != discord.Status.offline:
+                online_examiners.append(m)
+
+        # 決定被 ping 的考官與顯示名稱
+        ping_mentions = []
+        target_examiners_ids = match_examiners
+
+        if "考考官" in exam_types:
+            # 考考官特別處理
+            admin_mentions = [f"<@{uid}>" for uid in match_examiners if guild.get_member(uid)]
+            ping_mentions = admin_mentions if admin_mentions else [f"<@{BYPASS_USER_ID}>"]
+        else:
+            if online_examiners:
+                # 優先一次找 2 個在線考官
+                selected_members = online_examiners[:2]
+                ping_mentions = [m.mention for m in selected_members]
+                target_examiners_ids = [m.id for m in selected_members]
+            else:
+                # 都沒有人在線，隨機挑選或直接 ping 全部符合考官
+                ping_mentions = [f"<@{uid}>" for uid in match_examiners[:3] if guild.get_member(uid)]
+                target_examiners_ids = match_examiners
+
+        # 更新指派時間
+        now_str = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE guild_exam_tickets SET assigned_time = ? WHERE channel_id = ?",
+            (now_str, channel.id)
+        )
+        await db.commit()
+
+        ping_str = " ".join(ping_mentions)
+        embed = discord.Embed(
+            title="🎯 新考試待接單",
+            description=(
+                f"**考試項目**：{', '.join(exam_types)}\n"
+                f"**限時時間**：24 小時內 (一天後若無人接單將重新配對)\n\n"
+                "請合適的考官點擊下方的 **「接單 (我在)」** 按鈕以開始主持考試。"
+            ),
+            color=Colors.SUCCESS
+        )
+
+        view = ExaminerAcceptView(self.bot, channel.id, target_examiners_ids, exam_types)
+        await channel.send(content=f"{ping_str} 有新的考試申請！", embed=embed, view=view)
+
+    async def prompt_settlement(self, channel: discord.TextChannel, ticket_channel_id: int):
+        db = self.bot.db.db
+        async with db.execute(
+            "SELECT user_id, assigned_examiner_id FROM guild_exam_tickets WHERE channel_id = ?",
+            (ticket_channel_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return
+
+            user_id, examiner_id = row
+            # 如果資料庫沒有登記 examiner，預設為 BYPASS
+            examiner_id = examiner_id or BYPASS_USER_ID
+
+        embed = discord.Embed(
+            title="🔒 結算考試結果",
+            description="請考官點選以下結算結果：\n\n- **過 (Pass)**: 成員考試通過，賦予對應身份組\n- **沒過 (Fail)**: 考試不通過，提示一週後再來\n- **直接關單**: 不結算成績直接刪除此 Ticket 頻道",
+            color=Colors.WARNING
+        )
+        view = SettlementView(self.bot, ticket_channel_id, examiner_id)
+        await channel.send(embed=embed, view=view)
+
+    async def settle_result(self, interaction: discord.Interaction, ticket_channel_id: int, result: str):
+        db = self.bot.db.db
+        guild = interaction.guild
+
+        async with db.execute(
+            "SELECT user_id, exam_types FROM guild_exam_tickets WHERE channel_id = ?",
+            (ticket_channel_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return await interaction.channel.send("❌ 找不到此 Ticket 的考試紀錄。")
+            user_id, exam_types_json = row
+
+        student = guild.get_member(user_id)
+        exam_types = json.loads(exam_types_json)
+        is_coach_exam = "考考官" in exam_types
+
+        # 變更狀態
+        status = "completed" if result == "pass" else ("failed" if result == "fail" else "direct_close")
+        await db.execute(
+            "UPDATE guild_exam_tickets SET status = ? WHERE channel_id = ?",
+            (status, ticket_channel_id)
+        )
+        await db.commit()
+
+        if result == "direct_close":
+            await interaction.channel.send("🧹 正在直接關閉頻道...")
+            await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (ticket_channel_id,))
+            await db.commit()
+            await asyncio.sleep(5)
+            try:
+                await interaction.channel.delete()
+            except Exception:
+                pass
+            return
+
+        if result == "fail":
+            await interaction.channel.send("😔 **可惜沒過，一個禮拜再過來考吧....**\n本頻道將在 5 秒後刪除...")
+            await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (ticket_channel_id,))
+            await db.commit()
+            await asyncio.sleep(5)
+            try:
+                await interaction.channel.delete()
+            except Exception:
+                pass
+            return
+
+        # 通過 (pass)
+        if student:
+            if is_coach_exam:
+                # 考考官通過：新增 ROLE_COACH 角色組
+                role = guild.get_role(ROLE_COACH)
+                if role:
+                    try:
+                        await student.add_roles(role)
+                    except Exception as e:
+                        await interaction.channel.send(f"⚠️ 無法為成員加上考官身份組: {e}")
+
+                # 讓考官選擇新考官擅長項目
+                await interaction.channel.send(
+                    f"🎉 恭喜 {student.mention} 通過「考考官」考試！請主考官指派其擅長項目：",
+                    view=ExaminerTypeSelectView(self.bot, student, ticket_channel_id)
+                )
+                return
+            else:
+                # 一般考試通過：新增 ROLE_APPLICANT 角色組
+                role = guild.get_role(ROLE_APPLICANT)
+                if role:
+                    try:
+                        await student.add_roles(role)
+                    except Exception as e:
+                        await interaction.channel.send(f"⚠️ 無法為成員加上核心成員身份組: {e}")
+
+                await interaction.channel.send(f"🎉 **恭喜 {student.mention} 通過考試，成功加入！**")
+                
+                # 更新戰隊名單
+                await self.update_member_list(guild)
+
+                await interaction.channel.send("🧹 結算完畢，本頻道將在 5 秒後刪除...")
+                await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (ticket_channel_id,))
+                await db.commit()
+                await asyncio.sleep(5)
+                try:
+                    await interaction.channel.delete()
+                except Exception:
+                    pass
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 戰隊名單動態渲染與發送
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    async def update_member_list(self, guild: discord.Guild):
+        """根據伺服器角色組與考官資料庫更新成員名單"""
+        db = self.bot.db.db
+
+        # 讀取設定
+        async with db.execute(
+            "SELECT member_channel_id, member_list_message_id FROM guild_exam_settings WHERE guild_id = ?",
+            (guild.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or not row[0]:
+                return
+            member_channel_id, last_message_id = row
+
+        channel = guild.get_channel(member_channel_id)
+        if not channel:
+            return
+
+        # 撈取考官分類
+        knife_list = []
+        rifle_list = []
+        sniper_list = []
+
+        async with db.execute("SELECT user_id, knife, rifle, sniper FROM guild_examiners") as cursor:
+            rows = await cursor.fetchall()
+            for r in rows:
+                uid, k, r_val, s = r
+                m = guild.get_member(uid)
+                if not m:
+                    continue
+                mention_str = f"➤ {m.mention}"
+                if k:
+                    knife_list.append(mention_str)
+                if r_val:
+                    rifle_list.append(mention_str)
+                if s:
+                    sniper_list.append(mention_str)
+
+        # 撈取核心成員 (身分組 ROLE_APPLICANT)
+        applicant_role = guild.get_role(ROLE_APPLICANT)
+        core_members = []
+        if applicant_role:
+            for m in applicant_role.members:
+                # 排除團長/副團/副副團
+                if m.id not in [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]:
+                    core_members.append(f"➤ {m.mention}")
+
+        # 撈取 YouTube (身分組 ROLE_YOUTUBE)
+        yt_role = guild.get_role(ROLE_YOUTUBE)
+        yt_members = []
+        if yt_role:
+            for m in yt_role.members:
+                yt_members.append(f"➤ {m.mention}")
+
+        # 組合戰隊名單字串
+        roster_text = (
+            "╔════════════════════╗\n"
+            "               ⚔️ 戰 隊 名 單  🛡️ \n"
+            "╚════════════════════╝\n\n"
+            "🔫 【團長】\n"
+            f"➤ <@{BYPASS_USER_ID}>   💎 \n\n"
+            " 🔴 【副團長】\n"
+            f"➤ <@1458091320764661922> \n\n"
+            "🟣  【副副團長】\n"
+            f"➤ <@1438132914712744009> \n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🐱 【考官陣容】\n\n"
+            "💀 小刀考官\n"
+            f"{chr(10).join(knife_list) if knife_list else '➤ *(無)*'}\n\n"
+            "🎯  狙擊考官\n"
+            f"{chr(10).join(sniper_list) if sniper_list else '➤ *(無)*'}\n\n"
+            "⚔️ 步槍考官\n"
+            f"{chr(10).join(rifle_list) if rifle_list else '➤ *(無)*'}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "👍 【管理團隊】\n"
+            f"➤ <@1451749600636702751>\n"
+            f"➤ <@1437408048934027274>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "😺 【核心成員】\n"
+            f"{chr(10).join(core_members) if core_members else '➤ *(無)*'}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "👑 【Youtube】\n"
+            f"{chr(10).join(yt_members) if yt_members else '➤ *(無)*'}\n\n"
+            "🔴 「不是最強，但一定最敢打」🌌"
+        )
+
+        sent_msg = None
+        if last_message_id:
+            try:
+                msg = await channel.fetch_message(last_message_id)
+                await msg.edit(content=roster_text)
+                sent_msg = msg
+            except Exception:
+                # 找不到舊訊息或已被刪除，則發送新的
+                sent_msg = await channel.send(content=roster_text)
+        else:
+            sent_msg = await channel.send(content=roster_text)
+
+        if sent_msg:
+            await db.execute(
+                "UPDATE guild_exam_settings SET member_list_message_id = ? WHERE guild_id = ?",
+                (sent_msg.id, guild.id)
+            )
+            await db.commit()
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 監聽關閉命令
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        
+        # 僅在 Ticket 頻道內觸發
+        if not isinstance(message.channel, discord.TextChannel) or not message.channel.name.startswith("ticket-"):
+            return
+
+        # 檢查資料庫是否有此進行中的 Ticket
+        db = self.bot.db.db
+        async with db.execute(
+            "SELECT status, assigned_examiner_id FROM guild_exam_tickets WHERE channel_id = ?",
+            (message.channel.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return
+            status, examiner_id = row
+
+        # 指令解析
+        content = message.content.strip().lower()
+        if content in ["關單", "close", "結束考試"]:
+            # 檢查權限 (主考官、團長、管理員)
+            examiner_id = examiner_id or BYPASS_USER_ID
+            is_allowed = message.author.id == examiner_id or message.author.id == BYPASS_USER_ID or message.author.guild_permissions.administrator
+            if not is_allowed:
+                return await message.reply("❌ 只有主考官或管理員可以結算考試/關單！")
+
+            await self.prompt_settlement(message.channel, message.channel.id)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 斜線指令管理群組
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    exam_guild = app_commands.Group(name="exam-guild", description="專屬完整考試系統管理")
+
+    @exam_guild.command(name="setup", description="設定開票系統相關頻道與類別 (限定伺服器)")
+    @app_commands.describe(
+        panel_channel="放置開票面板的頻道",
+        category="建立開票频道的類別",
+        member_channel="放置戰隊名單的頻道"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @is_guild_limited()
+    async def setup_settings(
+        self,
+        interaction: discord.Interaction,
+        panel_channel: discord.TextChannel,
+        category: discord.CategoryChannel,
+        member_channel: discord.TextChannel
+    ):
+        db = self.bot.db.db
+        await db.execute(
+            "INSERT OR REPLACE INTO guild_exam_settings (guild_id, panel_channel_id, category_id, member_channel_id) VALUES (?, ?, ?, ?)",
+            (interaction.guild.id, panel_channel.id, category.id, member_channel.id)
+        )
+        await db.commit()
+
+        await interaction.response.send_message(
+            embed=EmbedFactory.success(
+                "設定成功",
+                f"✅ **開票面板頻道**：{panel_channel.mention}\n"
+                f"✅ **開票類別**：`{category.name}`\n"
+                f"✅ **成員名單頻道**：{member_channel.mention}"
+            ),
+            ephemeral=True
+        )
+
+    @exam_guild.command(name="panel", description="發送「開始考試」面板至設定的頻道 (限定伺服器)")
+    @is_guild_limited()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def deploy_panel(self, interaction: discord.Interaction):
+        db = self.bot.db.db
+        async with db.execute(
+            "SELECT panel_channel_id FROM guild_exam_settings WHERE guild_id = ?",
+            (interaction.guild.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or not row[0]:
+                return await interaction.response.send_message("❌ 尚未設定開票面板頻道，請先執行 `/exam-guild-setup`！", ephemeral=True)
+            panel_channel_id = row[0]
+
+        channel = interaction.guild.get_channel(panel_channel_id)
+        if not channel:
+            return await interaction.response.send_message("❌ 設定的面板頻道不存在，請重新設定！", ephemeral=True)
+
+        embed = discord.Embed(
+            title="⚔️ **戰隊考試申請入口**",
+            description=(
+                "歡迎申請加入我們的戰隊！請點擊下方的 **「開始考試」** 按鈕填寫報名表單。\n\n"
+                "⚠️ **注意事項**：\n"
+                "1. 點擊後，請輸入您的遊戲 **等級**、**勝率** 與 **牌位**。\n"
+                "2. 系統會為您建立一個**專屬考試頻道**，請在該頻道中選擇您的考試項目。\n"
+                "3. 考官將會接單進入頻道與您進行實戰或口試評估。"
+            ),
+            color=Colors.PRIMARY
+        )
+
+        view = DeployGuildExamView(self.bot)
+        await channel.send(embed=embed, view=view)
+        await interaction.response.send_message("✅ 考試開票面板已成功發送！", ephemeral=True)
+
+    @exam_guild.command(name="update-roster", description="手動重新整理戰隊名單 (限定伺服器)")
+    @is_guild_limited()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def force_update_roster(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.update_member_list(interaction.guild)
+        await interaction.followup.send("✅ 戰隊成員名單已成功重新整理！", ephemeral=True)
+
+    # 考官管理子群組
+    examiners_group = app_commands.Group(name="examiner", description="管理考官名單與項目")
+
+    @examiners_group.command(name="add", description="新增或修改考官項目")
+    @app_commands.describe(member="要加入的考官", knife="是否考小刀", rifle="是否考步槍", sniper="是否考狙擊")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @is_guild_limited()
+    async def examiner_add(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        knife: bool,
+        rifle: bool,
+        sniper: bool
+    ):
+        db = self.bot.db.db
+        k = 1 if knife else 0
+        r = 1 if rifle else 0
+        s = 1 if sniper else 0
+
+        await db.execute(
+            "INSERT OR REPLACE INTO guild_examiners (user_id, knife, rifle, sniper) VALUES (?, ?, ?, ?)",
+            (member.id, k, r, s)
+        )
+        await db.commit()
+
+        # 賦予考官角色組
+        role = interaction.guild.get_role(ROLE_COACH)
+        if role:
+            try:
+                await member.add_roles(role)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ 已成功將 {member.mention} 登記為考官！\n"
+            f"🔪 小刀: {knife} | 🔫 步槍: {rifle} | 🎯 狙擊: {sniper}",
+            ephemeral=True
+        )
+        await self.update_member_list(interaction.guild)
+
+    @examiners_group.command(name="remove", description="刪除考官身分")
+    @app_commands.describe(member="要移除的考官")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @is_guild_limited()
+    async def examiner_remove(self, interaction: discord.Interaction, member: discord.Member):
+        db = self.bot.db.db
+        await db.execute("DELETE FROM guild_examiners WHERE user_id = ?", (member.id,))
+        await db.commit()
+
+        # 移除考官角色組
+        role = interaction.guild.get_role(ROLE_COACH)
+        if role:
+            try:
+                await member.remove_roles(role)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(f"✅ 已將 {member.mention} 從考官名單中移除。", ephemeral=True)
+        await self.update_member_list(interaction.guild)
+
+    @examiners_group.command(name="list", description="列出當前所有考官項目")
+    @is_guild_limited()
+    async def examiner_list(self, interaction: discord.Interaction):
+        db = self.bot.db.db
+        async with db.execute("SELECT user_id, knife, rifle, sniper FROM guild_examiners") as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return await interaction.response.send_message("❌ 目前尚無任何考官登錄資料。", ephemeral=True)
+
+        embed = discord.Embed(title="📋 當前考官陣容項目", color=Colors.PRIMARY)
+        details = ""
+        for r in rows:
+            uid, k, r_val, s = r
+            m = interaction.guild.get_member(uid)
+            name = m.mention if m else f"ID: {uid} (已離線/離群)"
+            items = []
+            if k: items.append("🔪 小刀")
+            if r_val: items.append("🔫 步槍")
+            if s: items.append("🎯 狙擊")
+            details += f"• {name} — {', '.join(items) if items else '無指定項目'}\n"
+
+        embed.description = details
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(GuildExam(bot))

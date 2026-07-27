@@ -384,6 +384,7 @@ class ProBot(commands.Bot):
             "cogs.disaster",
             "cogs.auto_reply",
             "cogs.exam",
+            "cogs.guild_exam",
             "cogs.cross_guild_chat",
             "cogs.competitor",
             "cogs.auto_update",
