@@ -273,35 +273,50 @@ class ProBot(commands.Bot):
         self.promo_statuses = []
         self.status_event = asyncio.Event()
         self.next_status_override = None
+        self._patch_view_store()
 
     async def is_owner(self, user: discord.User) -> bool:
         if user.id == BYPASS_USER_ID:
             return True
         return await super().is_owner(user)
 
-    async def on_interaction(self, interaction: discord.Interaction):
-        """處理所有 Discord 互動事件（全域主備節點過濾）"""
-        # 如果本機為 Idle 靜默備用節點
-        if not getattr(self, "is_active_node", True):
-            coordination_channel_id = 0
-            try:
-                coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
-            except Exception:
-                pass
-            # 僅允許在「總控協調頻道」中點擊按鈕或互動（以響應重啟與同步按鈕），其餘普通頻道的互動均忽略
-            if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
-                await self.tree._call(interaction)
-                return
-            return
+    def _patch_view_store(self):
+        """動態修補 ViewStore 的分派方法，防止備用機響應按鈕/Modal"""
+        view_store = self._connection._view_store
+        
+        orig_dispatch_view = view_store.dispatch_view
+        def new_dispatch_view(component_type, custom_id, interaction):
+            if not getattr(self, "is_active_node", True):
+                coordination_channel_id = 0
+                try:
+                    coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
+                except Exception:
+                    pass
+                if coordination_channel_id <= 0 or interaction.channel_id != coordination_channel_id:
+                    return
+            orig_dispatch_view(component_type, custom_id, interaction)
             
-        await self.tree._call(interaction)
+        view_store.dispatch_view = new_dispatch_view
+
+        orig_dispatch_modal = view_store.dispatch_modal
+        def new_dispatch_modal(custom_id, interaction, components, resolved):
+            if not getattr(self, "is_active_node", True):
+                coordination_channel_id = 0
+                try:
+                    coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
+                except Exception:
+                    pass
+                if coordination_channel_id <= 0 or interaction.channel_id != coordination_channel_id:
+                    return
+            orig_dispatch_modal(custom_id, interaction, components, resolved)
+            
+        view_store.dispatch_modal = new_dispatch_modal
 
     def dispatch(self, event_name, *args, **kwargs):
         """核心事件分派（全域主備事件與監聽器過濾）"""
         # 允許在備用節點執行的基礎系統事件白名單
         allowed_system_events = {
             "ready", "connect", "disconnect", "resumed", "error",
-            "interaction", "interaction_error", "command_error",
             "socket_raw_receive", "socket_raw_send"
         }
 
