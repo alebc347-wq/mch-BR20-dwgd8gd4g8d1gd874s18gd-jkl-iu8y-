@@ -133,12 +133,23 @@ class ExamRegisterModal(discord.ui.Modal):
         async with db.execute("SELECT user_id FROM guild_examiners") as cursor:
             examiners = await cursor.fetchall()
             for r in examiners:
+                # 優先使用 get_member, 找不到再嘗試 fetch_member 確保能加權限
                 examiner_member = guild.get_member(r[0])
+                if not examiner_member:
+                    try:
+                        examiner_member = await guild.fetch_member(r[0])
+                    except Exception:
+                        pass
                 if examiner_member:
                     overwrites[examiner_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
         # 確保團長也有權限
         bypass_member = guild.get_member(BYPASS_USER_ID)
+        if not bypass_member:
+            try:
+                bypass_member = await guild.fetch_member(BYPASS_USER_ID)
+            except Exception:
+                pass
         if bypass_member:
             overwrites[bypass_member] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
@@ -275,7 +286,7 @@ class ExaminerAcceptView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
         self.ticket_channel_id = ticket_channel_id
-        self.match_examiners = match_examiners  # 符合項目的考官 ID 列表
+        self.match_examiners = match_examiners  # 符合項目的所有考官 ID 列表
         self.allowed_roles = allowed_roles      # 包含的項目
 
     @discord.ui.button(
@@ -660,7 +671,7 @@ class GuildExam(commands.Cog):
                         last_activity = last_activity.astimezone(timezone.utc)
 
                     if now - last_activity >= timedelta(days=10):
-                        await channel.send("⏰ 此 Ticket 頻道由於 10 天內無任何新對話與活動，系統將進行自動清理與關閉。")
+                        await channel.send("⏰ 此 Ticket 頻道由於 10 天內無 any 新對話與活動，系統將進行自動清理與關閉。")
                         await asyncio.sleep(5)
                         try:
                             await channel.delete()
@@ -684,7 +695,6 @@ class GuildExam(commands.Cog):
         guild = channel.guild
 
         # 找符合考試項目的考官
-        query = "SELECT user_id FROM guild_examiners WHERE "
         conditions = []
         if "小刀" in exam_types:
             conditions.append("knife = 1")
@@ -692,40 +702,55 @@ class GuildExam(commands.Cog):
             conditions.append("rifle = 1")
         if "狙擊" in exam_types:
             conditions.append("sniper = 1")
+
         if "考考官" in exam_types or not conditions:
-            # 考考官預設找管理層/團長/副團/副副團
-            match_examiners = [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]
+            # 考考官時，撈取所有登錄的考官
+            async with db.execute("SELECT user_id FROM guild_examiners") as cursor:
+                rows = await cursor.fetchall()
+                match_examiners = [r[0] for r in rows]
+            # 確保團長、副團長、副副團長也在名單內
+            for uid in [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]:
+                if uid not in match_examiners:
+                    match_examiners.append(uid)
         else:
-            query += " OR ".join(conditions)
+            query = "SELECT user_id FROM guild_examiners WHERE " + " OR ".join(conditions)
             async with db.execute(query) as cursor:
                 rows = await cursor.fetchall()
                 match_examiners = [r[0] for r in rows]
 
-        # 篩選在線 (online, idle, dnd) 的考官
+        # 篩選在線 (online, idle, dnd) 的考官。使用 fetch_member 強制拉取，避免 Discord cache get_member 漏失
         online_examiners = []
         for uid in match_examiners:
-            m = guild.get_member(uid)
-            if m and m.status != discord.Status.offline:
-                online_examiners.append(m)
+            try:
+                m = await guild.fetch_member(uid)
+                if m and m.status != discord.Status.offline:
+                    online_examiners.append(m)
+            except Exception:
+                m = guild.get_member(uid)
+                if m and m.status != discord.Status.offline:
+                    online_examiners.append(m)
 
         # 決定被 ping 的考官與顯示名稱
         ping_mentions = []
+        # 接單按鈕權限 match_examiners 永遠包含所有符合該項目的考官！
         target_examiners_ids = match_examiners
 
         if "考考官" in exam_types:
             # 考考官特別處理
-            admin_mentions = [f"<@{uid}>" for uid in match_examiners if guild.get_member(uid)]
+            admin_mentions = []
+            for uid in [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]:
+                m = guild.get_member(uid)
+                if m:
+                    admin_mentions.append(m.mention)
             ping_mentions = admin_mentions if admin_mentions else [f"<@{BYPASS_USER_ID}>"]
         else:
             if online_examiners:
                 # 優先一次找 2 個在線考官
                 selected_members = online_examiners[:2]
                 ping_mentions = [m.mention for m in selected_members]
-                target_examiners_ids = [m.id for m in selected_members]
             else:
-                # 都沒有人在線，隨機挑選或直接 ping 全部符合考官
+                # 都沒有人在線，隨機挑選或直接 ping 全部符合考官的前 3 位
                 ping_mentions = [f"<@{uid}>" for uid in match_examiners[:3] if guild.get_member(uid)]
-                target_examiners_ids = match_examiners
 
         # 更新指派時間
         now_str = datetime.now(timezone.utc).isoformat()
