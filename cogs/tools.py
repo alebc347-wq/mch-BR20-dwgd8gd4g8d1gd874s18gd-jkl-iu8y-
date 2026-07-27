@@ -833,25 +833,10 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
                 fp.seek(0)
                 
                 # 取得選定的 Voice & Tone 的顯示名稱
-                voice_dict = {
-                    "zh-TW-HsiaoChenNeural": "臺灣中文 - 曉臻 (女)",
-                    "zh-TW-YunJheNeural": "臺灣中文 - 雲哲 (男)",
-                    "zh-TW-HsiaoYuNeural": "臺灣中文 - 曉雨 (女)",
-                    "zh-CN-XiaoxiaoNeural": "大陸普通話 - 曉曉 (女)",
-                    "zh-CN-YunxiNeural": "大陸普通話 - 雲希 (男)",
-                    "zh-CN-YunjianNeural": "大陸普通話 - 雲健 (男)",
-                    "zh-HK-HiuGaaiNeural": "粵語 (香港) - 曉佳 (女)",
-                    "zh-HK-WanLungNeural": "粵語 (香港) - 雲龍 (男)",
-                    "en-US-JennyNeural": "美國英文 - Jenny (女)",
-                    "en-US-GuyNeural": "美國英文 - Guy (男)",
-                    "en-US-AriaNeural": "美國英文 - Aria (女)",
-                    "en-GB-SoniaNeural": "英國英文 - Sonia (女)",
-                    "en-GB-RyanNeural": "英國英文 - Ryan (男)",
-                    "ja-JP-NanamiNeural": "日文 - Nanami (女)",
-                    "ja-JP-KeitaNeural": "日文 - Keita (男)",
-                    "ko-KR-SunHiNeural": "韓文 - SunHi (女)",
-                    "ko-KR-InJoonNeural": "韓文 - InJoon (男)"
-                }
+                voice_dict = {}
+                for cat_key, voices in VOICE_CATEGORIES.items():
+                    for v_val, v_name in voices:
+                        voice_dict[v_val] = v_name
                 voice_label = voice_dict.get(use_voice, use_voice)
                 
                 tone_dict = {
@@ -888,14 +873,15 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
             view = TTSInteractiveView(text, interaction.user.id)
             
             embed = discord.Embed(
-                title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+                title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
                 color=Colors.PRIMARY
             )
-            embed.add_field(name="**發音角色**", value="臺灣中文 - 曉臻 (女)", inline=True)
+            embed.add_field(name="**語言分類**", value="臺灣中文 (Traditional Chinese)", inline=True)
+            embed.add_field(name="**語音角色**", value="曉臻 (女 - 臺灣)", inline=True)
             embed.add_field(name="**語速音調**", value="速度: 正常 | 音調: 正常", inline=True)
             preview = text if len(text) <= 300 else text[:300] + "..."
             embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
-            embed.set_footer(text="選擇好後，點擊下方「🔊 開始生成語音」按鈕開始處理。")
+            embed.set_footer(text="可重複切換分類與角色。確認後，點擊下方「🔊 開始生成語音」按鈕。")
             
             await interaction.response.send_message(embed=embed, view=view)
 
@@ -1277,49 +1263,143 @@ def generate_nonsense(topic: str, min_len: int) -> str:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TTS (Text-to-Speech) UI 元件
+# TTS (Text-to-Speech) UI 元件 (雙層動態分類選單)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class TTSVoiceSelect(discord.ui.Select):
-    def __init__(self, current_voice: str):
+VOICE_CATEGORIES = {
+    "zh-TW": [
+        ("zh-TW-HsiaoChenNeural", "曉臻 (女 - 臺灣)"),
+        ("zh-TW-YunJheNeural", "雲哲 (男 - 臺灣)"),
+        ("zh-TW-HsiaoYuNeural", "曉雨 (女 - 臺灣)")
+    ],
+    "zh-CN": [
+        ("zh-CN-XiaoxiaoNeural", "曉曉 (女 - 大陸普通話)"),
+        ("zh-CN-YunxiNeural", "雲希 (男 - 大陸普通話)"),
+        ("zh-CN-YunjianNeural", "雲健 (男 - 大陸普通話)"),
+        ("zh-CN-XiaoyiNeural", "曉伊 (女 - 大陸普通話)"),
+        ("zh-CN-YunxiaNeural", "雲夏 (男 - 大陸普通話)"),
+        ("zh-CN-YunyangNeural", "雲揚 (男 - 大陸普通話)"),
+        ("zh-CN-liaoning-XiaobeiNeural", "曉北 (女 - 東北遼寧)"),
+        ("zh-CN-shaanxi-XiaoniNeural", "曉妮 (女 - 陝西陝北)")
+    ],
+    "zh-HK": [
+        ("zh-HK-HiuGaaiNeural", "曉佳 (女 - 粵語)"),
+        ("zh-HK-HiuMaanNeural", "曉蔓 (女 - 粵語)"),
+        ("zh-HK-WanLungNeural", "雲龍 (男 - 粵語)")
+    ],
+    "en-US": [
+        ("en-US-JennyNeural", "Jenny (女 - 美語)"),
+        ("en-US-GuyNeural", "Guy (男 - 美語)"),
+        ("en-US-AriaNeural", "Aria (女 - 美語)"),
+        ("en-US-AvaNeural", "Ava (女 - 美語)"),
+        ("en-US-AndrewNeural", "Andrew (男 - 美語)"),
+        ("en-US-EmmaNeural", "Emma (女 - 美語)"),
+        ("en-US-BrianNeural", "Brian (男 - 美語)"),
+        ("en-US-AnaNeural", "Ana (女 - 兒童美語)"),
+        ("en-US-ChristopherNeural", "Christopher (男 - 美語)"),
+        ("en-US-EricNeural", "Eric (男 - 美語)"),
+        ("en-US-MichelleNeural", "Michelle (女 - 美語)"),
+        ("en-US-RogerNeural", "Roger (男 - 美語)"),
+        ("en-US-SteffanNeural", "Steffan (男 - 美語)")
+    ],
+    "en-GB": [
+        ("en-GB-SoniaNeural", "Sonia (女 - 英語)"),
+        ("en-GB-RyanNeural", "Ryan (男 - 英語)"),
+        ("en-GB-LibbyNeural", "Libby (女 - 英語)"),
+        ("en-GB-MaisieNeural", "Maisie (女 - 英語)"),
+        ("en-GB-ThomasNeural", "Thomas (男 - 英語)")
+    ],
+    "ja-JP": [
+        ("ja-JP-NanamiNeural", "Nanami (女 - 日語)"),
+        ("ja-JP-KeitaNeural", "Keita (男 - 日語)")
+    ],
+    "ko-KR": [
+        ("ko-KR-SunHiNeural", "SunHi (女 - 韓語)"),
+        ("ko-KR-InJoonNeural", "InJoon (男 - 韓語)"),
+        ("ko-KR-HyunsuMultilingualNeural", "Hyunsu (男 - 多語韓語)")
+    ],
+    "fr-de": [
+        ("fr-FR-DeniseNeural", "Denise (女 - 法語)"),
+        ("fr-FR-EloiseNeural", "Eloise (女 - 法語)"),
+        ("fr-FR-HenriNeural", "Henri (男 - 法語)"),
+        ("de-DE-KatjaNeural", "Katja (女 - 德語)"),
+        ("de-DE-ConradNeural", "Conrad (男 - 德語)"),
+        ("de-DE-KillianNeural", "Killian (男 - 德語)"),
+        ("de-DE-AmalaNeural", "Amala (女 - 德語)")
+    ],
+    "es-it": [
+        ("es-ES-ElviraNeural", "Elvira (女 - 西班牙語)"),
+        ("es-ES-AlvaroNeural", "Alvaro (男 - 西班牙語)"),
+        ("it-IT-ElsaNeural", "Elsa (女 - 義大利語)"),
+        ("it-IT-DiegoNeural", "Diego (男 - 義大利語)"),
+        ("it-IT-GiuseppeMultilingualNeural", "Giuseppe (男 - 多語義語)"),
+        ("it-IT-IsabellaNeural", "Isabella (女 - 義大利語)")
+    ],
+    "others": [
+        ("vi-VN-HoaiMyNeural", "Hoài My (女 - 越南語)"),
+        ("vi-VN-NamMinhNeural", "Nam Minh (男 - 越南語)"),
+        ("th-TH-PremwadeeNeural", "Premwadee (女 - 泰語)"),
+        ("th-TH-NiwatNeural", "Niwat (男 - 泰語)"),
+        ("id-ID-ArdiNeural", "Ardi (男 - 印尼語)"),
+        ("id-ID-GadisNeural", "Gadis (女 - 印尼語)"),
+        ("fil-PH-AngeloNeural", "Angelo (男 - 菲律賓語)"),
+        ("fil-PH-BlessicaNeural", "Blessica (女 - 菲律賓語)")
+    ]
+}
+
+
+class TTSCategorySelect(discord.ui.Select):
+    def __init__(self, current_category: str):
         options = [
-            discord.SelectOption(label="臺灣中文 - 曉臻 (女)", value="zh-TW-HsiaoChenNeural", description="台灣腔女聲 (預設)"),
-            discord.SelectOption(label="臺灣中文 - 雲哲 (男)", value="zh-TW-YunJheNeural", description="台灣腔男聲"),
-            discord.SelectOption(label="臺灣中文 - 曉雨 (女)", value="zh-TW-HsiaoYuNeural", description="台灣腔女聲 (曉雨)"),
-            discord.SelectOption(label="大陸普通話 - 曉曉 (女)", value="zh-CN-XiaoxiaoNeural", description="大陸普通話女聲"),
-            discord.SelectOption(label="大陸普通話 - 雲希 (男)", value="zh-CN-YunxiNeural", description="大陸普通話男聲"),
-            discord.SelectOption(label="大陸普通話 - 雲健 (男)", value="zh-CN-YunjianNeural", description="大陸普通話男聲 (雲健)"),
-            discord.SelectOption(label="粵語 (香港) - 曉佳 (女)", value="zh-HK-HiuGaaiNeural", description="廣東話女聲"),
-            discord.SelectOption(label="粵語 (香港) - 雲龍 (男)", value="zh-HK-WanLungNeural", description="廣東話男聲"),
-            discord.SelectOption(label="美國英文 - Jenny (女)", value="en-US-JennyNeural", description="美式英文女聲 (Jenny)"),
-            discord.SelectOption(label="美國英文 - Guy (男)", value="en-US-GuyNeural", description="美式英文男聲 (Guy)"),
-            discord.SelectOption(label="美國英文 - Aria (女)", value="en-US-AriaNeural", description="美式英文女聲 (Aria)"),
-            discord.SelectOption(label="英國英文 - Sonia (女)", value="en-GB-SoniaNeural", description="英式英文女聲 (Sonia)"),
-            discord.SelectOption(label="英國英文 - Ryan (男)", value="en-GB-RyanNeural", description="英式英文男聲 (Ryan)"),
-            discord.SelectOption(label="日文 - Nanami (女)", value="ja-JP-NanamiNeural", description="日語女聲"),
-            discord.SelectOption(label="日文 - Keita (男)", value="ja-JP-KeitaNeural", description="日語男聲"),
-            discord.SelectOption(label="韓文 - SunHi (女)", value="ko-KR-SunHiNeural", description="韓語女聲"),
-            discord.SelectOption(label="韓文 - InJoon (男)", value="ko-KR-InJoonNeural", description="韓語男聲"),
-            discord.SelectOption(label="法文 - Denise (女)", value="fr-FR-DeniseNeural", description="法文女聲"),
-            discord.SelectOption(label="法文 - Henri (男)", value="fr-FR-HenriNeural", description="法文男聲"),
-            discord.SelectOption(label="德文 - Katja (女)", value="de-DE-KatjaNeural", description="德文女聲"),
-            discord.SelectOption(label="德文 - Conrad (男)", value="de-DE-ConradNeural", description="德文男聲"),
-            discord.SelectOption(label="西班牙文 - Elvira (女)", value="es-ES-ElviraNeural", description="西班牙文女聲"),
-            discord.SelectOption(label="西班牙文 - Alvaro (男)", value="es-ES-AlvaroNeural", description="西班牙文男聲"),
-            discord.SelectOption(label="義大利文 - Elsa (女)", value="it-IT-ElsaNeural", description="義大利文女聲"),
-            discord.SelectOption(label="越南文 - HoaiMy (女)", value="vi-VN-HoaiMyNeural", description="越南文女聲")
+            discord.SelectOption(label="臺灣中文 (Traditional Chinese)", value="zh-TW", emoji="🇹🇼"),
+            discord.SelectOption(label="大陸普通話 (Simplified Chinese)", value="zh-CN", emoji="🇨🇳"),
+            discord.SelectOption(label="粵語香港話 (Cantonese)", value="zh-HK", emoji="🇭🇰"),
+            discord.SelectOption(label="美式英文 (US English)", value="en-US", emoji="🇺🇸"),
+            discord.SelectOption(label="英式英文 (UK English)", value="en-GB", emoji="🇬🇧"),
+            discord.SelectOption(label="日語 (Japanese)", value="ja-JP", emoji="🇯🇵"),
+            discord.SelectOption(label="韓語 (Korean)", value="ko-KR", emoji="🇰🇷"),
+            discord.SelectOption(label="法語與德語 (French & German)", value="fr-de", emoji="🇪🇺"),
+            discord.SelectOption(label="西班牙與義大利語 (Spanish & Italian)", value="es-it", emoji="🇪🇺"),
+            discord.SelectOption(label="其他亞洲語言 (Other Asian)", value="others", emoji="🌏")
         ]
         
         for option in options:
-            if option.value == current_voice:
+            if option.value == current_category:
                 option.default = True
                 
         super().__init__(
-            placeholder="選擇語音角色與語言...",
+            placeholder="選擇語系分類...",
             min_values=1,
             max_values=1,
             options=options,
             row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_category = self.values[0]
+        first_voice = VOICE_CATEGORIES[self.view.selected_category][0][0]
+        self.view.selected_voice = first_voice
+        self.view.update_voice_select_options()
+        await self.view.update_embed(interaction)
+
+
+class TTSVoiceSelect(discord.ui.Select):
+    def __init__(self, category: str, current_voice: str):
+        options = []
+        voices_list = VOICE_CATEGORIES.get(category, VOICE_CATEGORIES["zh-TW"])
+        for val, name in voices_list:
+            options.append(discord.SelectOption(
+                label=name,
+                value=val,
+                default=(val == current_voice)
+            ))
+            
+        super().__init__(
+            placeholder="選擇語音角色...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -1348,7 +1428,7 @@ class TTSToneSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
-            row=1
+            row=2
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -1358,35 +1438,47 @@ class TTSToneSelect(discord.ui.Select):
 
 class TTSInteractiveView(discord.ui.View):
     def __init__(self, text: str, user_id: int):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.text = text
         self.user_id = user_id
+        
+        self.selected_category = "zh-TW"
         self.selected_voice = "zh-TW-HsiaoChenNeural"
         self.selected_tone = "normal_normal"
         
-        self.voice_select = TTSVoiceSelect(self.selected_voice)
+        self.category_select = TTSCategorySelect(self.selected_category)
+        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
         self.tone_select = TTSToneSelect(self.selected_tone)
+        
+        self.add_item(self.category_select)
         self.add_item(self.voice_select)
         self.add_item(self.tone_select)
         
+    def update_voice_select_options(self):
+        self.remove_item(self.voice_select)
+        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
+        self.add_item(self.voice_select)
+        
     async def update_embed(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
             color=Colors.PRIMARY
         )
         
+        cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
         voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
         tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
         
-        embed.add_field(name="**發音角色**", value=voice_label, inline=True)
+        embed.add_field(name="**語言分類**", value=cat_label, inline=True)
+        embed.add_field(name="**語音角色**", value=voice_label, inline=True)
         embed.add_field(name="**語速音調**", value=tone_label, inline=True)
         
         preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
         embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
-        embed.set_footer(text="選擇好後，點擊下方「🔊 開始生成語音」按鈕開始處理。")
+        embed.set_footer(text="可重複切換分類與角色。確認後，點擊下方「🔊 開始生成語音」按鈕。")
         
-        for option in self.voice_select.options:
-            option.default = (option.value == self.selected_voice)
+        for option in self.category_select.options:
+            option.default = (option.value == self.selected_category)
         for option in self.tone_select.options:
             option.default = (option.value == self.selected_tone)
             
@@ -1398,7 +1490,7 @@ class TTSInteractiveView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="🔊 開始生成語音", style=discord.ButtonStyle.success, row=2, custom_id="tts_generate_btn")
+    @discord.ui.button(label="🔊 開始生成語音", style=discord.ButtonStyle.success, row=3, custom_id="tts_generate_btn")
     async def generate_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
@@ -1417,7 +1509,7 @@ class TTSInteractiveView(discord.ui.View):
             child.disabled = True
             
         embed = discord.Embed(
-            title="🎙️ TTS 文字轉語音產生器 (互動模式)",
+            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
             color=Colors.WARNING,
             description="⏳ 正在為您生成語音，請稍候..."
         )
@@ -1442,9 +1534,12 @@ class TTSInteractiveView(discord.ui.View):
                 title="🎙️ TTS 文字轉語音產生器",
                 color=Colors.SUCCESS
             )
+            
+            cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
             voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
             tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
             
+            success_embed.add_field(name="**語言分類**", value=cat_label, inline=True)
             success_embed.add_field(name="**發音角色**", value=voice_label, inline=True)
             success_embed.add_field(name="**語速音調**", value=tone_label, inline=True)
             preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
@@ -1464,6 +1559,7 @@ class TTSInteractiveView(discord.ui.View):
                 color=Colors.ERROR
             )
             await interaction.edit_original_response(embed=error_embed, view=self)
+
 
 
 async def setup(bot: commands.Bot):
