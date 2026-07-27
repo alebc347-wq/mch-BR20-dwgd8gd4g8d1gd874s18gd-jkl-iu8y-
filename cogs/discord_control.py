@@ -69,6 +69,8 @@ class DiscordControl(commands.Cog):
         if self.server_id and self.channel_id:
             # 預設為備用，直到心跳確認
             self.bot.is_active_node = False
+            self.last_seen_counters = {}
+            self.counter_miss_ticks = {}
             self.coordination_loop.start()
             print(f"📡 已載入主備協調模組。當前主機: {self.server_id}，協調頻道: {self.channel_id}")
         else:
@@ -79,12 +81,26 @@ class DiscordControl(commands.Cog):
 
     async def get_coordination_message(self, channel: discord.TextChannel) -> discord.Message | None:
         """尋找或建立總控面板訊息"""
-        # 搜尋最近 50 條訊息，看有沒有由自己發送且帶有標題的訊息
-        async for message in channel.history(limit=50):
-            if message.author.id == self.bot.user.id and message.embeds:
-                embed = message.embeds[0]
-                if embed.title == "🤖 倉鼠勇者 2.0 總控中心":
-                    return message
+        # 1. 優先從釘選訊息中尋找
+        try:
+            pins = await channel.pins()
+            for message in pins:
+                if message.author.id == self.bot.user.id and message.embeds:
+                    embed = message.embeds[0]
+                    if embed.title == "🤖 倉鼠勇者 2.0 總控中心":
+                        return message
+        except Exception:
+            pass
+
+        # 2. 若釘選訊息中沒有，再搜尋最近 100 條訊息
+        try:
+            async for message in channel.history(limit=100):
+                if message.author.id == self.bot.user.id and message.embeds:
+                    embed = message.embeds[0]
+                    if embed.title == "🤖 倉鼠勇者 2.0 總控中心":
+                        return message
+        except Exception:
+            pass
         return None
 
     async def handle_control_action(self, interaction: discord.Interaction, action: str, target: str):
@@ -127,7 +143,8 @@ class DiscordControl(commands.Cog):
             "locked": "",
             "restarting_pending": "",
             "sync_pending": "",
-            "heartbeats": {}
+            "heartbeats": {},
+            "counters": {}
         }
         
         if not message.embeds or not message.embeds[0].footer or not message.embeds[0].footer.text:
@@ -139,7 +156,11 @@ class DiscordControl(commands.Cog):
             
         try:
             json_str = footer_text.replace("COORDINATION_DATA:", "", 1)
-            return json.loads(json_str)
+            parsed = json.loads(json_str)
+            for k, v in default_data.items():
+                if k not in parsed:
+                    parsed[k] = v
+            return parsed
         except Exception:
             return default_data
 
@@ -168,7 +189,10 @@ class DiscordControl(commands.Cog):
         
         for sid in all_monitored:
             last_seen = heartbeats.get(sid, 0)
-            is_online = (now - last_seen < 35) if last_seen > 0 else False
+            if hasattr(self, "counter_miss_ticks") and sid in self.counter_miss_ticks:
+                is_online = self.counter_miss_ticks.get(sid, 0) < 3
+            else:
+                is_online = (now - last_seen < 35) if last_seen > 0 else False
             is_active = (sid == active_server)
             
             if is_online:
@@ -216,10 +240,15 @@ class DiscordControl(commands.Cog):
                     "locked": "",
                     "restarting_pending": "",
                     "sync_pending": "",
-                    "heartbeats": {self.server_id: time.time()}
+                    "heartbeats": {self.server_id: time.time()},
+                    "counters": {self.server_id: 1}
                 }
                 embed = self.build_embed(initial_data)
                 message = await channel.send(embed=embed, view=view)
+                try:
+                    await message.pin()
+                except Exception:
+                    pass
                 # 註冊 view 監聽器
                 self.bot.add_view(view)
                 data = initial_data
@@ -229,11 +258,15 @@ class DiscordControl(commands.Cog):
                 # 解析現有狀態
                 data = self.parse_footer_data(message)
 
-            # 2. 更新自己這台主機的心跳時間
+            # 2. 更新自己這台主機的心跳時間與計數器
             now_time = time.time()
             if "heartbeats" not in data:
                 data["heartbeats"] = {}
             data["heartbeats"][self.server_id] = now_time
+
+            if "counters" not in data:
+                data["counters"] = {}
+            data["counters"][self.server_id] = data["counters"].get(self.server_id, 0) + 1
 
             # 3. 處理強制重啟指令
             if data.get("restarting_pending") == self.server_id:
@@ -277,11 +310,29 @@ class DiscordControl(commands.Cog):
                     return
 
             # 4. 主備故障轉移邏輯
-            # 計算哪些節點是在線的 (心跳在 35 秒內)
-            active_nodes = [
-                sid for sid, ltime in data["heartbeats"].items()
-                if now_time - ltime < 35
-            ]
+            if "counters" not in data:
+                data["counters"] = {}
+
+            active_nodes = []
+            for sid, ltime in list(data["heartbeats"].items()):
+                counter = data["counters"].get(sid, 0)
+                
+                # 混合時間差與計數器變化判斷在線狀態
+                is_timestamp_recent = (now_time - ltime < 120) if ltime > 0 else False
+                if not is_timestamp_recent:
+                    self.counter_miss_ticks[sid] = 3
+                else:
+                    if sid not in self.last_seen_counters:
+                        self.last_seen_counters[sid] = counter
+                        self.counter_miss_ticks[sid] = 0
+                    elif counter > self.last_seen_counters[sid]:
+                        self.last_seen_counters[sid] = counter
+                        self.counter_miss_ticks[sid] = 0
+                    else:
+                        self.counter_miss_ticks[sid] = self.counter_miss_ticks.get(sid, 0) + 1
+
+                if self.counter_miss_ticks.get(sid, 0) < 3:
+                    active_nodes.append(sid)
 
             locked_server = data.get("locked", "")
             current_active = data.get("active", "")
@@ -329,8 +380,6 @@ class DiscordControl(commands.Cog):
 
         except Exception as e:
             print(f"❌ 總控協調迴圈錯誤: {e}")
-            # 如果心跳失敗，為防全部 Bot 停擺，自動將自己設為 Active 防中斷
-            self.bot.is_active_node = True
 
 
 async def setup(bot: commands.Bot):
