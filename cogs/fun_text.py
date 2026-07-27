@@ -38,7 +38,7 @@ class FunText(commands.Cog):
                 )
 
         await interaction.response.defer(ephemeral=True)
-        await interaction.channel.send(message)
+        await interaction.channel.send(message, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
         await interaction.followup.send("✅ 已發送！", ephemeral=True)
 
     @commands.command(name="say")

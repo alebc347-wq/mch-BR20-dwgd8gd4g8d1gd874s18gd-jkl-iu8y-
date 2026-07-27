@@ -229,7 +229,7 @@ class AutoReply(commands.Cog):
 
             if triggered:
                 final_reply = self._process_reply(reply_text, message)
-                await message.channel.send(final_reply)
+                await message.channel.send(final_reply, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
                 return
 
         # 2. 檢查內建回覆是否啟用 (預設為啟用)
@@ -239,7 +239,7 @@ class AutoReply(commands.Cog):
         if enable_default:
             # 內建回覆採用精確匹配
             if content in DEFAULT_REPLIES:
-                await message.channel.send(DEFAULT_REPLIES[content])
+                await message.channel.send(DEFAULT_REPLIES[content], allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
                 return
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

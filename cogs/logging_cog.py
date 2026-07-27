@@ -170,6 +170,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         self.db = bot.db
         self.pro_reminder_loop.start()
         self._presence_cooldowns = {}
+        self._log_rate_limits = {}
 
     def cog_unload(self):
         self.pro_reminder_loop.cancel()
@@ -224,8 +225,42 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         if channel:
             await self.db.set_log_channel(guild.id, channel.id)
 
-    async def _send_log(self, guild: discord.Guild, embed: discord.Embed, view: discord.ui.View = None):
+    def _check_log_rate_limit(self, guild_id: int, event: str, limit_per_minute: int = 15) -> bool:
+        """限制同一個公會中特定事件每分鐘發送日誌的數量，防止 429 或被 Discord 判定為濫用"""
+        import time
+        now = time.time()
+        if guild_id not in self._log_rate_limits:
+            self._log_rate_limits[guild_id] = {}
+        if event not in self._log_rate_limits[guild_id]:
+            self._log_rate_limits[guild_id][event] = []
+            
+        # 清除超過 60 秒的舊紀錄
+        self._log_rate_limits[guild_id][event] = [t for t in self._log_rate_limits[guild_id][event] if now - t < 60]
+        
+        # 檢查數量是否超限
+        if len(self._log_rate_limits[guild_id][event]) >= limit_per_minute:
+            return False
+            
+        self._log_rate_limits[guild_id][event].append(now)
+        return True
+
+    async def _send_log(self, guild: discord.Guild, embed: discord.Embed, view: discord.ui.View = None, event: str = None):
         """發送日誌到設定的日誌頻道"""
+        if event:
+            limit = 20
+            if event == "typing":
+                limit = 5
+            elif event == "new_message":
+                limit = 10
+            elif event in ("message_edit", "message_delete", "voice"):
+                limit = 15
+            elif event == "status_change":
+                limit = 10
+            elif event == "soundboard":
+                limit = 10
+                
+            if not self._check_log_rate_limit(guild.id, event, limit):
+                return
         log_channel_id = await self.db.get_log_channel(guild.id)
         if not log_channel_id:
             return
@@ -415,7 +450,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             channel_id=message.channel.id,
             guild_id=message.guild.id,
         )
-        await self._send_log(message.guild, embed, view)
+        await self._send_log(message.guild, embed, view, event="message_delete")
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
@@ -455,7 +490,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
                 url=f"https://discord.com/channels/{guild.id}/{channel.id}",
                 emoji="🔗"
             ))
-        await self._send_log(guild, embed, view)
+        await self._send_log(guild, embed, view, event="message_delete")
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
@@ -476,7 +511,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             channel_id=after.channel.id,
             guild_id=after.guild.id,
         )
-        await self._send_log(after.guild, embed, view)
+        await self._send_log(after.guild, embed, view, event="message_edit")
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
@@ -506,7 +541,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         
         embed = EmbedFactory.log_voice(member, before, after, self.bot)
         view = UserProfileButton(member.id)
-        await self._send_log(member.guild, embed, view)
+        await self._send_log(member.guild, embed, view, event="voice")
 
     @commands.Cog.listener()
     async def on_typing(self, channel: discord.abc.Messageable, user: discord.Member | discord.User, when):
@@ -520,7 +555,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             return
         
         embed = EmbedFactory.log_typing(channel, user, self.bot)
-        await self._send_log(guild, embed)
+        await self._send_log(guild, embed, event="typing")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -551,7 +586,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             channel_id=message.channel.id,
             guild_id=message.guild.id,
         )
-        await self._send_log(message.guild, embed, view)
+        await self._send_log(message.guild, embed, view, event="new_message")
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
@@ -830,7 +865,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             embed.add_field(name="**時間**", value=f"`{now.strftime('%Y-%m-%d %H:%M:%S')}`", inline=False)
 
             EmbedFactory._add_server_footer(embed, guild, self.bot)
-            await self._send_log(guild, embed)
+            await self._send_log(guild, embed, event="soundboard")
 
 
 async def setup(bot: commands.Bot):

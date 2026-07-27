@@ -629,7 +629,7 @@ class CrossGuildChat(commands.Cog):
                     await webhook.edit_message(
                         dest_msg_id,
                         content=content,
-                        allowed_mentions=discord.AllowedMentions(users=False)
+                        allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=False)
                     )
             except Exception as e:
                 print(f"[Cross-Guild] 編輯轉發訊息 {dest_msg_id} 失敗: {e}")
@@ -842,7 +842,7 @@ class CrossGuildChat(commands.Cog):
                     username=username[:80],
                     avatar_url=avatar_url,
                     files=cloned_files,
-                    allowed_mentions=discord.AllowedMentions(users=False),
+                    allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=False),
                     wait=True
                 )
                 return dest_channel.id, sent_msg.id
@@ -860,7 +860,7 @@ class CrossGuildChat(commands.Cog):
                     username=username[:80],
                     avatar_url=avatar_url,
                     files=cloned_files,
-                    allowed_mentions=discord.AllowedMentions(users=False),
+                    allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=False),
                     wait=True
                 )
                 return dest_channel.id, sent_msg.id
