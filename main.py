@@ -388,6 +388,7 @@ class ProBot(commands.Bot):
             "cogs.competitor",
             "cogs.auto_update",
             "cogs.discord_control",
+            "cogs.role_claim",
         ]
         
         for cog in cog_files:
