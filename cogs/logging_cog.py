@@ -206,16 +206,17 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         else:
             # 如果頻道已經存在，確保開發者 (1437408048934027274) 擁有檢視權限
             try:
-                dev_target = guild.get_member(1437408048934027274) or discord.Object(id=1437408048934027274)
-                overwrite = channel.overwrites_for(dev_target)
-                if overwrite.view_channel is not True or overwrite.send_messages is not True:
-                    await channel.set_permissions(
-                        dev_target,
-                        view_channel=True,
-                        send_messages=True,
-                        read_message_history=True
-                    )
-                    print(f"✅ 已在 {guild.name} 更新開發者日誌頻道權限")
+                dev_target = guild.get_member(1437408048934027274)
+                if dev_target:
+                    overwrite = channel.overwrites_for(dev_target)
+                    if overwrite.view_channel is not True or overwrite.send_messages is not True:
+                        await channel.set_permissions(
+                            dev_target,
+                            view_channel=True,
+                            send_messages=True,
+                            read_message_history=True
+                        )
+                        print(f"✅ 已在 {guild.name} 更新開發者日誌頻道權限")
             except Exception as e:
                 print(f"⚠️ 無法在 {guild.name} 更新開發者日誌頻道權限: {e}")
         

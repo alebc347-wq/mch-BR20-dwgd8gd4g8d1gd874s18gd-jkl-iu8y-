@@ -405,7 +405,6 @@ class ProBot(commands.Bot):
                 return True
             return getattr(ctx.bot, "is_active_node", True)
 
-        @self.tree.interaction_check
         async def globally_check_interaction(interaction: discord.Interaction):
             coordination_channel_id = 0
             try:
@@ -416,6 +415,8 @@ class ProBot(commands.Bot):
             if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
                 return True
             return getattr(interaction.client, "is_active_node", True)
+
+        self.tree.interaction_check = globally_check_interaction
 
         # 同步 Slash Commands
         try:
