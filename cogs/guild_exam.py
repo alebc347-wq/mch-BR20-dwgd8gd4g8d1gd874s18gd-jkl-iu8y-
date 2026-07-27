@@ -15,7 +15,6 @@ from utils.embeds import EmbedFactory
 
 TARGET_GUILD_ID = 1472826730300309629
 ROLE_APPLICANT = 1478335180069671044   # 一般考試通過後新增的角色組 (核心成員)
-ROLE_EXAMINER = 1478335180069671044    # 考官角色組在名單中也是需要管理的 (使用者要求考官通過後獲得的角色組 1489513038699827270)
 ROLE_COACH = 1489513038699827270       # 考考官通過後獲得的角色組
 ROLE_YOUTUBE = 1477119651182805005     # 考考官需擁有的 YouTube 角色組
 BYPASS_USER_ID = 1437408048934027274   # 團長 ID
@@ -32,6 +31,26 @@ DEFAULT_EXAMINERS = [
     (1444634939541815347, 0, 1, 1),  # 步槍、狙擊考官
     (1458091320764661922, 0, 1, 0),  # 步槍考官
     (1437408048934027274, 1, 1, 1),  # 團長 (全能)
+]
+
+# 預設戰隊核心成員名單
+DEFAULT_CORE_MEMBERS = [
+    (1492390033213358261, ""),
+    (1121812848532799648, ""),
+    (1444634939541815347, ""),
+    (1472830305634091101, ""),
+    (1371788772936646716, ""),
+    (1421430913652494518, ""),
+    (1491779590362759338, ""),
+    (1452295135642783856, ""),
+    (1438482564384817194, ""),
+    (1442071283830620221, ""),
+    (1391986586446594088, ""),
+    (1161313819520405626, "  950連勝!!  :modstreak: "),
+    (1446673715973722112, ""),
+    (1454822286484832307, ""),
+    (1401099920345399347, ""),
+    (1386692651406987306, ""),
 ]
 
 
@@ -154,7 +173,7 @@ class ExamRegisterModal(discord.ui.Modal):
             inline=False
         )
 
-        view = TicketInitView(self.bot, ticket_channel.id, interaction.user.id)
+        view = TicketInitView(self.bot, ticket_channel.id, interaction.user.id, interaction.user)
         await ticket_channel.send(content=interaction.user.mention, embed=welcome_embed, view=view)
 
         await interaction.followup.send(f"✅ 您的專屬考試頻道已經建立：{ticket_channel.mention}", ephemeral=True)
@@ -163,35 +182,46 @@ class ExamRegisterModal(discord.ui.Modal):
 class TicketInitView(discord.ui.View):
     """Ticket 頻道內的第一步：選單"""
 
-    def __init__(self, bot, channel_id: int, user_id: int):
+    def __init__(self, bot, channel_id: int, user_id: int, member: discord.Member):
         super().__init__(timeout=None)
         self.bot = bot
         self.channel_id = channel_id
         self.user_id = user_id
 
         # 新增多選下拉選單 (支援選 1~2 個項目)
-        self.add_item(ExamTypeSelect(bot, channel_id, user_id))
+        self.add_item(ExamTypeSelect(bot, channel_id, user_id, member))
 
 
 class ExamTypeSelect(discord.ui.Select):
-    """考試項目下拉選單 (多選 1~2 個)"""
+    """考試項目下拉選單"""
 
-    def __init__(self, bot, channel_id: int, user_id: int):
+    def __init__(self, bot, channel_id: int, user_id: int, member: discord.Member):
         self.bot = bot
         self.channel_id = channel_id
         self.user_id = user_id
 
-        options = [
-            discord.SelectOption(label="小刀", value="小刀", emoji="🔪", description="進行小刀考試項目"),
-            discord.SelectOption(label="步槍", value="步槍", emoji="🔫", description="進行步槍考試項目"),
-            discord.SelectOption(label="狙擊", value="狙擊", emoji="🎯", description="進行狙擊考試項目"),
-            discord.SelectOption(label="考考官", value="考考官", emoji="👑", description="申請成為考官（需有 YouTube 角色組）"),
-        ]
+        is_applicant = any(r.id == ROLE_APPLICANT for r in member.roles)
+
+        options = []
+        if is_applicant:
+            # 已經考過一般考試 (核心成員)，只有考考官選項
+            options.append(discord.SelectOption(label="考考官", value="考考官", emoji="👑", description="申請成為考官（需有 YouTube 角色組）"))
+            min_val = 1
+            max_val = 1
+        else:
+            options = [
+                discord.SelectOption(label="小刀", value="小刀", emoji="🔪", description="進行小刀考試項目"),
+                discord.SelectOption(label="步槍", value="步槍", emoji="🔫", description="進行步槍考試項目"),
+                discord.SelectOption(label="狙擊", value="狙擊", emoji="🎯", description="進行狙擊考試項目"),
+                discord.SelectOption(label="考考官", value="考考官", emoji="👑", description="申請成為考官（需有 YouTube 角色組）"),
+            ]
+            min_val = 1
+            max_val = 2
 
         super().__init__(
-            placeholder="請選擇考試項目 (可選擇 1~2 個)...",
-            min_values=1,
-            max_values=2,
+            placeholder="請選擇考試項目...",
+            min_values=min_val,
+            max_values=max_val,
             options=options,
             custom_id=f"guild_exam:select:{channel_id}"
         )
@@ -256,6 +286,12 @@ class ExaminerAcceptView(discord.ui.View):
     )
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         db = self.bot.db.db
+
+        # 檢查考生 ID，防範自己接自己的單
+        async with db.execute("SELECT user_id FROM guild_exam_tickets WHERE channel_id = ?", (self.ticket_channel_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row and interaction.user.id == row[0]:
+                return await interaction.response.send_message("❌ 惡作劇退散！您不能自己接自己的考試單！", ephemeral=True)
 
         # 驗證按按鈕者是否為符合條件的考官或超級管理員
         is_allowed = interaction.user.id in self.match_examiners or interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator
@@ -450,6 +486,13 @@ class DeployGuildExamView(discord.ui.View):
 
         db = self.bot.db.db
         
+        # 檢查是否已同時擁有核心成員與考官身分組
+        is_applicant = any(r.id == ROLE_APPLICANT for r in interaction.user.roles)
+        is_coach = any(r.id == ROLE_COACH for r in interaction.user.roles)
+
+        if is_applicant and is_coach:
+            return await interaction.response.send_message("❌ 您已同時擁有核心成員與考官身份，無法再進行考試！", ephemeral=True)
+
         # 檢查設定
         async with db.execute(
             "SELECT category_id FROM guild_exam_settings WHERE guild_id = ?",
@@ -496,7 +539,7 @@ class GuildExam(commands.Cog):
         await self.init_db()
 
     async def init_db(self):
-        """建立資料表與初始化預設考官"""
+        """建立資料表與初始化預設考官與核心成員"""
         db = self.bot.db.db
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS guild_exam_settings (
@@ -527,6 +570,11 @@ class GuildExam(commands.Cog):
                 rifle INTEGER DEFAULT 0,
                 sniper INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS guild_core_members (
+                user_id INTEGER PRIMARY KEY,
+                note TEXT
+            );
         """)
         await db.commit()
 
@@ -541,6 +589,18 @@ class GuildExam(commands.Cog):
                     )
                 await db.commit()
                 print("✅ 已成功初始化預設考官名單")
+
+        # 如果核心成員表為空，寫入預設成員
+        async with db.execute("SELECT COUNT(*) FROM guild_core_members") as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == 0:
+                for uid, note in DEFAULT_CORE_MEMBERS:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+                        (uid, note)
+                    )
+                await db.commit()
+                print("✅ 已成功初始化預設戰隊核心成員名單")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 背景循環任務：24 小時未接單輪替與 10 天無活動自動清理
@@ -784,6 +844,13 @@ class GuildExam(commands.Cog):
                     except Exception as e:
                         await interaction.channel.send(f"⚠️ 無法為成員加上核心成員身份組: {e}")
 
+                # 新增核心成員至資料庫名單
+                await db.execute(
+                    "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+                    (student.id, "")
+                )
+                await db.commit()
+
                 await interaction.channel.send(f"🎉 **恭喜 {student.mention} 通過考試，成功加入！**")
                 
                 # 更新戰隊名單
@@ -831,7 +898,7 @@ class GuildExam(commands.Cog):
                 m = guild.get_member(uid)
                 if not m:
                     continue
-                mention_str = f"➤ {m.mention}"
+                mention_str = f"➤ <@{uid}>"
                 if k:
                     knife_list.append(mention_str)
                 if r_val:
@@ -839,52 +906,45 @@ class GuildExam(commands.Cog):
                 if s:
                     sniper_list.append(mention_str)
 
-        # 撈取核心成員 (身分組 ROLE_APPLICANT)
-        applicant_role = guild.get_role(ROLE_APPLICANT)
+        # 從資料庫中讀取所有核心成員與備註
         core_members = []
-        if applicant_role:
-            for m in applicant_role.members:
-                # 排除團長/副團/副副團
-                if m.id not in [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]:
-                    core_members.append(f"➤ {m.mention}")
+        async with db.execute("SELECT user_id, note FROM guild_core_members") as cursor:
+            rows = await cursor.fetchall()
+            for r in rows:
+                uid, note = r
+                note_str = note if note else ""
+                core_members.append(f"➤ <@{uid}>{note_str}")
 
-        # 撈取 YouTube (身分組 ROLE_YOUTUBE)
-        yt_role = guild.get_role(ROLE_YOUTUBE)
-        yt_members = []
-        if yt_role:
-            for m in yt_role.members:
-                yt_members.append(f"➤ {m.mention}")
-
-        # 組合戰隊名單字串
+        # 組合戰隊名單字串 (使用原有的 Discord 表情符號字串格式)
         roster_text = (
             "╔════════════════════╗\n"
-            "               ⚔️ 戰 隊 名 單  🛡️ \n"
+            "               :4_: 戰 隊 名 單  :2_: \n"
             "╚════════════════════╝\n\n"
-            "🔫 【團長】\n"
-            f"➤ <@{BYPASS_USER_ID}>   💎 \n\n"
-            " 🔴 【副團長】\n"
-            f"➤ <@1458091320764661922> \n\n"
-            "🟣  【副副團長】\n"
-            f"➤ <@1438132914712744009> \n\n"
+            ":pepegunshot: 【團長】\n"
+            f"➤ <@{BYPASS_USER_ID}>   :cooldiamondshapeamethystgemjewel: \n\n"
+            " <:Archnemesis:1473248275871043736> 【副團長】\n"
+            f"➤ <@1458091320764661922>\n\n"
+            "<:__:1473201415206866944>  【副副團長】\n"
+            f"➤ <@1438132914712744009>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🐱 【考官陣容】\n\n"
-            "💀 小刀考官\n"
+            ":smileycat: 【考官陣容】\n\n"
+            ":catdead: 小刀考官\n"
             f"{chr(10).join(knife_list) if knife_list else '➤ *(無)*'}\n\n"
-            "🎯  狙擊考官\n"
+            ":chipichapa:  狙擊考官\n"
             f"{chr(10).join(sniper_list) if sniper_list else '➤ *(無)*'}\n\n"
-            "⚔️ 步槍考官\n"
+            ":blobfishbruh: 步槍考官\n"
             f"{chr(10).join(rifle_list) if rifle_list else '➤ *(無)*'}\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "👍 【管理團隊】\n"
+            ":catok: 【管理團隊】\n"
             f"➤ <@1451749600636702751>\n"
             f"➤ <@1437408048934027274>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "😺 【核心成員】\n"
+            ":cat_wawa: 【核心成員】\n"
             f"{chr(10).join(core_members) if core_members else '➤ *(無)*'}\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "👑 【Youtube】\n"
-            f"{chr(10).join(yt_members) if yt_members else '➤ *(無)*'}\n\n"
-            "🔴 「不是最強，但一定最敢打」🌌"
+            "<:GoldRank:1473249089947697243> 【Youtube】\n"
+            f"<@&{ROLE_YOUTUBE}>\n\n"
+            "<:Archnemesis:1473248275871043736> 「不是最強，但一定最敢打」<:NemisisRank:1473248937598128260>"
         )
 
         sent_msg = None
