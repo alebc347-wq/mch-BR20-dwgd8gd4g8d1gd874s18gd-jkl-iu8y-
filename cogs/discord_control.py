@@ -286,7 +286,7 @@ class DiscordControl(commands.Cog):
         except Exception as e:
             print(f"❌ 執行資料庫備份失敗: {e}")
 
-    async def restore_data(self, channel: discord.TextChannel) -> bool:
+    async def restore_data(self, channel: discord.TextChannel, force: bool = False) -> bool:
         """從 Discord 尋找最新備份並下載覆蓋本地"""
         try:
             backup_msg = None
@@ -308,9 +308,9 @@ class DiscordControl(commands.Cog):
                     backup_source = word.strip("`")
                     break
             
-            # 如果是本機剛備份的，且本地檔案已存在，則不需重複下載 (除非本地損毀)
+            # 如果是本機剛備份的，且本地檔案已存在，則不需重複下載 (除非強制下載或本地損毀)
             db_path = os.path.join("data", "bot.db")
-            if backup_source == self.server_id and os.path.exists(db_path):
+            if not force and backup_source == self.server_id and os.path.exists(db_path):
                 print("ℹ️ 最新備份為本機發送，已略過還原。")
                 return True
                 
@@ -377,7 +377,7 @@ class DiscordControl(commands.Cog):
         if not hasattr(self, "_has_restored"):
             self._has_restored = True
             try:
-                await self.restore_data(channel)
+                await self.restore_data(channel, force=True)
             except Exception as e:
                 print(f"⚠️ 啟動還原失敗: {e}")
                 
@@ -555,7 +555,7 @@ class DiscordControl(commands.Cog):
                     self.bot.is_active_node = True
                     # 剛升格為 Active，立刻從 Discord 同步最新的資料庫
                     try:
-                        await self.restore_data(channel)
+                        await self.restore_data(channel, force=True)
                     except Exception as e:
                         print(f"⚠️ 升格 Active 時還原失敗: {e}")
                 self.bot.is_active_node = True

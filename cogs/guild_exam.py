@@ -600,6 +600,70 @@ class GuildExam(commands.Cog):
         # 註冊持久化按鈕
         self.bot.add_view(DeployGuildExamView(self.bot))
         await self.init_db()
+        # 重新加載所有進行中 Ticket 的持久化 View
+        self.bot.loop.create_task(self.reload_active_views())
+
+    async def reload_active_views(self):
+        """Bot 啟動時，自動從資料庫讀取所有進行中的 Ticket，並重新註冊它們的持久化 View"""
+        await self.bot.wait_until_ready()
+        db = self.bot.db.db
+        guild = self.bot.get_guild(TARGET_GUILD_ID)
+        if not guild:
+            try:
+                guild = await self.bot.fetch_guild(TARGET_GUILD_ID)
+            except Exception:
+                pass
+        if not guild:
+            print("⚠️ 重新加載進行中考試 View 失敗：找不到目標伺服器")
+            return
+
+        try:
+            async with db.execute(
+                "SELECT channel_id, exam_types, assigned_examiner_id, status FROM guild_exam_tickets WHERE status != 'completed' AND status != 'failed'"
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            for row in rows:
+                channel_id, exam_types_json, assigned_examiner_id, status = row
+                
+                try:
+                    exam_types = json.loads(exam_types_json)
+                except Exception:
+                    exam_types = []
+                    
+                # 重新計算 match_examiners
+                conditions = []
+                if "小刀" in exam_types:
+                    conditions.append("knife = 1")
+                if "步槍" in exam_types:
+                    conditions.append("rifle = 1")
+                if "狙擊" in exam_types:
+                    conditions.append("sniper = 1")
+
+                if "考考官" in exam_types or not conditions:
+                    async with db.execute("SELECT user_id FROM guild_examiners") as cursor:
+                        examiners_rows = await cursor.fetchall()
+                        match_examiners = [r[0] for r in examiners_rows]
+                    for uid in [BYPASS_USER_ID, 1458091320764661922, 1438132914712744009]:
+                        if uid not in match_examiners:
+                            match_examiners.append(uid)
+                else:
+                    query = "SELECT user_id FROM guild_examiners WHERE " + " OR ".join(conditions)
+                    async with db.execute(query) as cursor:
+                        examiners_rows = await cursor.fetchall()
+                        match_examiners = [r[0] for r in examiners_rows]
+
+                # 根據狀態重新註冊 View
+                if status == 'waiting_examiner':
+                    view = ExaminerAcceptView(self.bot, channel_id, match_examiners, exam_types)
+                    self.bot.add_view(view)
+                    print(f"🔄 [Reload View] 已成功為 Ticket 頻道 {channel_id} 重新載入 ExaminerAcceptView")
+                elif status == 'testing' and assigned_examiner_id:
+                    view = ExaminerActionView(self.bot, channel_id, str(assigned_examiner_id))
+                    self.bot.add_view(view)
+                    print(f"🔄 [Reload View] 已成功為 Ticket 頻道 {channel_id} 重新載入 ExaminerActionView")
+        except Exception as e:
+            print(f"❌ 重新加載進行中考試 View 出錯: {e}")
 
     async def init_db(self):
         """建立資料表與初始化預設考官與核心成員"""
