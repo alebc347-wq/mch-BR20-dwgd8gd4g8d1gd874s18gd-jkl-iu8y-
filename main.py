@@ -317,7 +317,8 @@ class ProBot(commands.Bot):
         # 允許在備用節點執行的基礎系統事件白名單
         allowed_system_events = {
             "ready", "connect", "disconnect", "resumed", "error",
-            "socket_raw_receive", "socket_raw_send"
+            "socket_raw_receive", "socket_raw_send",
+            "voice_state_update", "voice_server_update"
         }
 
         # 如果本機為 Idle 靜默備用節點
