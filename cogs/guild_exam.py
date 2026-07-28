@@ -540,9 +540,11 @@ class GuildExam(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.check_tickets_loop.start()
+        self.performance_settle_loop.start()
 
     def cog_unload(self):
         self.check_tickets_loop.cancel()
+        self.performance_settle_loop.cancel()
 
     async def cog_load(self):
         # 註冊持久化按鈕
@@ -582,11 +584,17 @@ class GuildExam(commands.Cog):
                 sniper INTEGER DEFAULT 0
             );
 
-            CREATE TABLE IF NOT EXISTS guild_core_members (
-                user_id INTEGER PRIMARY KEY,
-                note TEXT
-            );
-        """)
+             CREATE TABLE IF NOT EXISTS guild_core_members (
+                 user_id INTEGER PRIMARY KEY,
+                 note TEXT
+             );
+
+             CREATE TABLE IF NOT EXISTS voice_time_tracker (
+                 user_id INTEGER PRIMARY KEY,
+                 seconds_this_month INTEGER DEFAULT 0,
+                 last_join_time TEXT
+             );
+         """)
         await db.commit()
 
         # 如果考官表為空，寫入預設考官
@@ -1189,6 +1197,205 @@ class GuildExam(commands.Cog):
 
         embed.description = details
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 考官語音業績追蹤與結算系統
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """監聽語音頻道狀態，累計考官的語音上線秒數"""
+        if member.bot:
+            return
+        
+        # 只記錄目標伺服器 (1472826730300309629)
+        if member.guild.id != TARGET_GUILD_ID:
+            return
+            
+        db = self.bot.db.db
+        now_str = datetime.now(timezone.utc).isoformat()
+        
+        # 1. 剛加入語音頻道
+        if before.channel is None and after.channel is not None:
+            await db.execute(
+                "INSERT OR IGNORE INTO voice_time_tracker (user_id, seconds_this_month, last_join_time) VALUES (?, 0, ?)",
+                (member.id, now_str)
+            )
+            await db.execute(
+                "UPDATE voice_time_tracker SET last_join_time = ? WHERE user_id = ?",
+                (now_str, member.id)
+            )
+            await db.commit()
+            
+        # 2. 離開語音頻道
+        elif before.channel is not None and after.channel is None:
+            async with db.execute("SELECT last_join_time, seconds_this_month FROM voice_time_tracker WHERE user_id = ?", (member.id,)) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        join_time = datetime.fromisoformat(row[0])
+                        duration = (datetime.now(timezone.utc) - join_time).total_seconds()
+                        if duration > 0:
+                            new_seconds = row[1] + int(duration)
+                            await db.execute(
+                                "UPDATE voice_time_tracker SET seconds_this_month = ?, last_join_time = NULL WHERE user_id = ?",
+                                (new_seconds, member.id)
+                            )
+                            await db.commit()
+                    except Exception as e:
+                        print(f"Error updating voice duration: {e}")
+
+    async def get_performance_report(self, guild: discord.Guild) -> tuple[str, discord.Embed]:
+        """計算並產生考官業績分配報告"""
+        db = self.bot.db.db
+        
+        # 1. 撈取所有考官
+        async with db.execute("SELECT user_id FROM guild_examiners") as cursor:
+            rows = await cursor.fetchall()
+            examiner_ids = [r[0] for r in rows]
+            
+        if not examiner_ids:
+            embed = discord.Embed(title="📊 考官業績分配報告", description="❌ 目前無登錄考官資料。", color=discord.Color.red())
+            return "❌ 目前無登錄考官資料。", embed
+            
+        # 2. 獲取所有考官本月的語音秒數
+        examiner_seconds = {}
+        for uid in examiner_ids:
+            async with db.execute("SELECT seconds_this_month FROM voice_time_tracker WHERE user_id = ?", (uid,)) as cursor:
+                row = await cursor.fetchone()
+                examiner_seconds[uid] = row[0] if row else 0
+                
+        # 3. 找出所有非團長的最低秒數
+        others_seconds = [sec for uid, sec in examiner_seconds.items() if uid != BYPASS_USER_ID]
+        min_others = min(others_seconds) if others_seconds else 0
+        
+        # 4. 團長時間調整 (最少原則)
+        adjusted_seconds = {}
+        for uid, sec in examiner_seconds.items():
+            if uid == BYPASS_USER_ID:
+                # 團長的上線時間調整為非團長最低時間的 0.8 倍 (以確保算出來的業績永遠最少)
+                adjusted_seconds[uid] = int(min_others * 0.8)
+            else:
+                adjusted_seconds[uid] = sec
+                
+        total_adjusted = sum(adjusted_seconds.values())
+        
+        # 5. 產生 Embed 報告
+        now = datetime.now()
+        month_str = now.strftime("%Y年%m月")
+        
+        embed = discord.Embed(
+            title=f"📊 {month_str} 考官語音業績分配報告",
+            description="本報告依據考官本月語音上線時間進行業績權重分配，並套用「團長最少」原則進行微調。",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        details = []
+        for uid in examiner_ids:
+            actual_sec = examiner_seconds[uid]
+            adj_sec = adjusted_seconds[uid]
+            
+            # 格式化實際時間
+            hours = actual_sec // 3600
+            minutes = (actual_sec % 3600) // 60
+            time_str = f"`{hours}小時 {minutes}分鐘`"
+            
+            # 計算比例
+            ratio = (adj_sec / total_adjusted * 100) if total_adjusted > 0 else 0.0
+            
+            member = guild.get_member(uid)
+            mention_name = member.mention if member else f"<@{uid}>"
+            
+            tag = " 👑 (團長已調最少)" if uid == BYPASS_USER_ID else ""
+            details.append((actual_sec, f"• {mention_name}：實際上線 {time_str} | **分配業績比例：{ratio:.2f}%**{tag}"))
+            
+        # 按實際時間排序
+        details.sort(key=lambda x: x[0], reverse=True)
+        embed.description += "\n\n" + "\n".join([d[1] for d in details])
+        
+        report_text = f"📊 **【考官月度業績報告】** ({month_str})\n"
+        report_text += "詳細業績分配比率如下，請考官們知悉。"
+        
+        return report_text, embed
+
+    @tasks.loop(hours=12)
+    async def performance_settle_loop(self):
+        """定時每個月 1 號進行自動結算發送"""
+        if not getattr(self.bot, "is_active_node", True):
+            return
+            
+        now = datetime.now()
+        # 如果是 1 號 
+        if now.day == 1:
+            db = self.bot.db.db
+            month_str = now.strftime("%Y-%m")
+            
+            # 查詢上次結算月份
+            async with db.execute("SELECT value FROM global_settings WHERE key = 'last_settled_month'") as cursor:
+                row = await cursor.fetchone()
+                last_settled = row[0] if row else ""
+                
+            if last_settled != month_str:
+                guild = self.bot.get_guild(TARGET_GUILD_ID)
+                if guild:
+                    # 業績發送目標頻道
+                    performance_channel_id = 1499759365547098212
+                    channel = guild.get_channel(performance_channel_id)
+                    if channel:
+                        report_text, embed = await self.get_performance_report(guild)
+                        await channel.send(content=report_text, embed=embed)
+                        
+                        # 結算完畢，將所有人的語音秒數重設為 0
+                        await db.execute("UPDATE voice_time_tracker SET seconds_this_month = 0")
+                        
+                        # 記錄本次結算月份
+                        await db.execute(
+                            "INSERT OR REPLACE INTO global_settings (key, value) VALUES ('last_settled_month', ?)",
+                            (month_str,)
+                        )
+                        await db.commit()
+                        print(f"📊 {month_str} 月度業績結算已自動發送並重設！")
+
+    @performance_settle_loop.before_loop
+    async def before_performance_settle_loop(self):
+        await self.bot.wait_until_ready()
+
+    @exam_guild.command(name="performance-check", description="預覽當前當月的考官語音業績分配報告 (限定伺服器)")
+    @is_guild_limited()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def performance_check(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        report_text, embed = await self.get_performance_report(interaction.guild)
+        await interaction.followup.send(content=report_text, embed=embed, ephemeral=True)
+
+    @exam_guild.command(name="performance-settle", description="立即手動結算本月考官語音業績並發送至指定頻道 (限定伺服器)")
+    @is_guild_limited()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def performance_settle(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        db = self.bot.db.db
+        
+        performance_channel_id = 1499759365547098212
+        channel = interaction.guild.get_channel(performance_channel_id)
+        if not channel:
+            return await interaction.followup.send("❌ 找不到指定的業績發送頻道 `1499759365547098212`！", ephemeral=True)
+            
+        report_text, embed = await self.get_performance_report(interaction.guild)
+        await channel.send(content=report_text, embed=embed)
+        
+        # 結算完畢，重設語音秒數
+        await db.execute("UPDATE voice_time_tracker SET seconds_this_month = 0")
+        
+        # 記錄本次結算月份
+        now = datetime.now()
+        month_str = now.strftime("%Y-%m")
+        await db.execute(
+            "INSERT OR REPLACE INTO global_settings (key, value) VALUES ('last_settled_month', ?)",
+            (month_str,)
+        )
+        await db.commit()
+        
+        await interaction.followup.send("✅ 業績已手動結算並發送成功，已重設當月考官語音累計秒數！", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

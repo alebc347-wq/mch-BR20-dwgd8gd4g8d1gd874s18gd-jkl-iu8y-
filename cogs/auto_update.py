@@ -104,6 +104,8 @@ class AutoUpdate(commands.Cog):
                         if (
                             target_path.startswith(".env") or 
                             target_path.startswith(".git") or 
+                            target_path.startswith("data/") or
+                            target_path.startswith("data\\") or
                             target_path == "deploy_config.json"
                         ):
                             continue

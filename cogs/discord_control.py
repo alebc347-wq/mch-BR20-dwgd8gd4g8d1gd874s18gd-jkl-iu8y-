@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import asyncio
+import random
 import discord
 from discord.ext import commands, tasks
 
@@ -70,6 +71,7 @@ class DiscordControl(commands.Cog):
         
         # 預設狀態
         self.bot.is_active_node = True
+        self.coordination_msg = None
         
         # 如果有設定 COORDINATION_CHANNEL_ID，才啟動主備控制
         if self.server_id and self.channel_id:
@@ -125,7 +127,18 @@ class DiscordControl(commands.Cog):
                 pass
             return
             
-        message = await self.get_coordination_message(channel)
+        message = None
+        if getattr(self, "coordination_msg", None):
+            try:
+                message = await channel.fetch_message(self.coordination_msg.id)
+                self.coordination_msg = message
+            except Exception:
+                self.coordination_msg = None
+                
+        if not message:
+            message = await self.get_coordination_message(channel)
+            self.coordination_msg = message
+            
         if not message:
             try:
                 await interaction.followup.send("❌ 找不到總控面板訊息！", ephemeral=True)
@@ -240,19 +253,151 @@ class DiscordControl(commands.Cog):
         embed.set_footer(text=f"COORDINATION_DATA:{json.dumps(data)}")
         return embed
 
+    async def backup_data(self, channel: discord.TextChannel):
+        """將本地 data/bot.db 與 data/custom_replies.json 上傳備份到 Discord"""
+        if not getattr(self.bot, "is_active_node", True):
+            return  # 只有 Active 主機才能進行備份，避免覆蓋最新資料
+            
+        db_path = os.path.join("data", "bot.db")
+        replies_path = os.path.join("data", "custom_replies.json")
+        
+        files = []
+        if os.path.exists(db_path):
+            files.append(discord.File(db_path, filename="bot.db"))
+        if os.path.exists(replies_path):
+            files.append(discord.File(replies_path, filename="custom_replies.json"))
+            
+        if not files:
+            return
+            
+        try:
+            # 1. 搜尋舊的備份並刪除
+            async for msg in channel.history(limit=50):
+                if msg.author.id == self.bot.user.id and "🤖 [SYSTEM_BACKUP_DATA]" in msg.content:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                        
+            # 2. 發送新備份
+            backup_msg = f"🤖 [SYSTEM_BACKUP_DATA] 由 `{self.server_id}` 於 <t:{int(time.time())}:F> 備份"
+            await channel.send(content=backup_msg, files=files)
+            print(f"💾 資料庫與設定檔已成功備份至 Discord！(由 {self.server_id} 發送)")
+        except Exception as e:
+            print(f"❌ 執行資料庫備份失敗: {e}")
+
+    async def restore_data(self, channel: discord.TextChannel) -> bool:
+        """從 Discord 尋找最新備份並下載覆蓋本地"""
+        try:
+            backup_msg = None
+            async for msg in channel.history(limit=50):
+                if msg.author.id == self.bot.user.id and "🤖 [SYSTEM_BACKUP_DATA]" in msg.content:
+                    # 檢查這條訊息是否有附件
+                    if msg.attachments:
+                        backup_msg = msg
+                        break
+                        
+            if not backup_msg:
+                print("ℹ️ 頻道中沒有找到可用的雲端備份資料。")
+                return False
+                
+            # 解析備份來源
+            backup_source = ""
+            for word in backup_msg.content.split():
+                if word.startswith("`wispbyte"):
+                    backup_source = word.strip("`")
+                    break
+            
+            # 如果是本機剛備份的，且本地檔案已存在，則不需重複下載 (除非本地損毀)
+            db_path = os.path.join("data", "bot.db")
+            if backup_source == self.server_id and os.path.exists(db_path):
+                print("ℹ️ 最新備份為本機發送，已略過還原。")
+                return True
+                
+            print(f"📥 偵測到來自 `{backup_source}` 的最新備份，正在下載並覆蓋本地存檔...")
+            
+            os.makedirs("data", exist_ok=True)
+            
+            for att in backup_msg.attachments:
+                target_file = None
+                if att.filename == "bot.db":
+                    target_file = os.path.join("data", "bot.db")
+                elif att.filename == "custom_replies.json":
+                    target_file = os.path.join("data", "custom_replies.json")
+                    
+                if target_file:
+                    # 安全寫入，先寫入臨時檔，再重新命名
+                    temp_file = target_file + ".tmp"
+                    await att.save(temp_file)
+                    
+                    # 如果是 sqlite，需要關閉當前 connection 才能覆蓋
+                    if att.filename == "bot.db":
+                        # 關閉資料庫連線
+                        try:
+                            await self.bot.db.close()
+                        except Exception:
+                            pass
+                            
+                    if os.path.exists(target_file):
+                        os.remove(target_file)
+                    os.rename(temp_file, target_file)
+                    
+                    if att.filename == "bot.db":
+                        # 重新連線資料庫
+                        try:
+                            await self.bot.db.connect()
+                        except Exception:
+                            pass
+                            
+            print("✅ 雲端資料還原成功！")
+            return True
+        except Exception as e:
+            print(f"❌ 執行資料庫還原失敗: {e}")
+            # 確保資料庫有重新連線
+            try:
+                await self.bot.db.connect()
+            except Exception:
+                pass
+            return False
+
     @tasks.loop(seconds=15)
     async def coordination_loop(self):
         """主要主備控制與心跳定時任務"""
         await self.bot.wait_until_ready()
+        
+        # 加上隨機延遲 (Jitter) 以錯開兩台主機的寫入時間，防止 Race Condition
+        await asyncio.sleep(random.uniform(0.5, 3.5))
         
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
             print(f"❌ 總控協調失敗：找不到頻道 ID {self.channel_id}")
             return
             
+        # 第一次啟動時，非同步嘗試還原最新的雲端資料庫
+        if not hasattr(self, "_has_restored"):
+            self._has_restored = True
+            try:
+                await self.restore_data(channel)
+            except Exception as e:
+                print(f"⚠️ 啟動還原失敗: {e}")
+                
         try:
             # 1. 取得總控訊息
-            message = await self.get_coordination_message(channel)
+            message = None
+            if getattr(self, "coordination_msg", None):
+                try:
+                    message = await channel.fetch_message(self.coordination_msg.id)
+                    self.coordination_msg = message
+                except discord.NotFound:
+                    self.coordination_msg = None
+                except Exception as ex:
+                    print(f"⚠️ fetch_message 錯誤: {ex}")
+                    self.coordination_msg = None
+                    
+            if not message:
+                message = await self.get_coordination_message(channel)
+                self.coordination_msg = message
+                
             view = CoordinationView(self)
             
             if not message:
@@ -267,6 +412,7 @@ class DiscordControl(commands.Cog):
                 }
                 embed = self.build_embed(initial_data)
                 message = await channel.send(embed=embed, view=view)
+                self.coordination_msg = message
                 try:
                     await message.pin()
                 except Exception:
@@ -293,6 +439,12 @@ class DiscordControl(commands.Cog):
             # 3. 處理強制重啟指令
             if data.get("restarting_pending") == self.server_id:
                 print("🔄 接收到總控重啟要求，正在執行安全重啟流程...")
+                # 強制進行重啟前備份
+                if getattr(self.bot, "is_active_node", True):
+                    try:
+                        await self.backup_data(channel)
+                    except Exception as e:
+                        print(f"⚠️ 重啟前備份失敗: {e}")
                 # 清除重啟請求，避免重啟後一直卡在重啟循環
                 data["restarting_pending"] = ""
                 new_embed = self.build_embed(data)
@@ -317,6 +469,12 @@ class DiscordControl(commands.Cog):
             # 3.5. 處理強制同步更新指令
             if data.get("sync_pending") == self.server_id:
                 print("🔄 接收到總控同步要求，正在執行從 GitHub 更新流程...")
+                # 強制進行更新前備份
+                if getattr(self.bot, "is_active_node", True):
+                    try:
+                        await self.backup_data(channel)
+                    except Exception as e:
+                        print(f"⚠️ 同步更新前備份失敗: {e}")
                 # 清除同步請求，避免重啟後一直卡在更新循環
                 data["sync_pending"] = ""
                 new_embed = self.build_embed(data)
@@ -344,7 +502,11 @@ class DiscordControl(commands.Cog):
                 if not is_timestamp_recent:
                     self.counter_miss_ticks[sid] = 3
                 else:
-                    if sid not in self.last_seen_counters:
+                    # 放寬在線判定的容錯機制：
+                    # 只要最後心跳時間戳距離現在少於 50 秒，即使因為 Race Condition 導致計數器沒增加或被舊資料覆蓋，依然視為在線
+                    if now_time - ltime < 50:
+                        self.counter_miss_ticks[sid] = 0
+                    elif sid not in self.last_seen_counters:
                         self.last_seen_counters[sid] = counter
                         self.counter_miss_ticks[sid] = 0
                     elif counter > self.last_seen_counters[sid]:
@@ -388,17 +550,39 @@ class DiscordControl(commands.Cog):
             # 5. 判斷自己是 Active 還是 Idle，並設定全域狀態
             final_active = data.get("active")
             if final_active == self.server_id:
-                if not self.bot.is_active_node:
+                if not getattr(self.bot, "is_active_node", True):
                     print("🏆 本機已被指派為 Active，開始響應 Discord 指令！")
+                    self.bot.is_active_node = True
+                    # 剛升格為 Active，立刻從 Discord 同步最新的資料庫
+                    try:
+                        await self.restore_data(channel)
+                    except Exception as e:
+                        print(f"⚠️ 升格 Active 時還原失敗: {e}")
                 self.bot.is_active_node = True
             else:
-                if self.bot.is_active_node:
+                if getattr(self.bot, "is_active_node", True):
                     print("💤 本機已退役為 Idle，進入靜默待命狀態...")
                 self.bot.is_active_node = False
 
             # 6. 更新並儲存回 Discord
-            new_embed = self.build_embed(data)
-            await message.edit(embed=new_embed)
+            try:
+                new_embed = self.build_embed(data)
+                await message.edit(embed=new_embed)
+            except discord.NotFound:
+                self.coordination_msg = None
+                raise
+
+            # 7. 定時備份 (每 20 次 loop，約 5 分鐘)
+            if getattr(self.bot, "is_active_node", True):
+                if not hasattr(self, "_backup_tick"):
+                    self._backup_tick = 0
+                self._backup_tick += 1
+                if self._backup_tick >= 20:
+                    self._backup_tick = 0
+                    try:
+                        await self.backup_data(channel)
+                    except Exception as e:
+                        print(f"⚠️ 定時備份失敗: {e}")
 
         except Exception as e:
             print(f"❌ 總控協調迴圈錯誤: {e}")
