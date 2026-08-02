@@ -260,6 +260,8 @@ class YouTubeNotifier(commands.Cog):
     @tasks.loop(minutes=5.0)
     async def check_youtube_channels(self):
         """定時檢查 YouTube 是否有新影片"""
+        if not getattr(self.bot, "is_active_node", True):
+            return
         try:
             await self._check_and_notify()
         except Exception as e:

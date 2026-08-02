@@ -75,14 +75,20 @@ class Giveaway(commands.Cog):
     @tasks.loop(seconds=30)
     async def check_giveaways(self):
         """定期檢查到期的抽獎"""
+        if not getattr(self.bot, "is_active_node", True):
+            return
+
         for guild in self.bot.guilds:
-            active = await self.db.get_active_giveaways(guild.id)
-            for giveaway_row in active:
-                giveaway = dict(giveaway_row)
-                ends_at = datetime.fromisoformat(giveaway["ends_at"])
-                
-                if datetime.now(timezone.utc) >= ends_at:
-                    await self._end_giveaway(giveaway)
+            try:
+                active = await self.db.get_active_giveaways(guild.id)
+                for giveaway_row in active:
+                    giveaway = dict(giveaway_row)
+                    ends_at = datetime.fromisoformat(giveaway["ends_at"])
+                    
+                    if datetime.now(timezone.utc) >= ends_at:
+                        await self._end_giveaway(giveaway)
+            except Exception as e:
+                print(f"Error checking giveaways for guild {guild.id}: {e}")
 
     @check_giveaways.before_loop
     async def before_check(self):

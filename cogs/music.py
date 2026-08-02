@@ -1025,6 +1025,8 @@ class Music(commands.Cog):
     @tasks.loop(seconds=5)
     async def controller_updater(self):
         """每 5 秒更新一次正在播放中的音樂控制面板進度條"""
+        if not getattr(self.bot, "is_active_node", True):
+            return
         for player in self.bot.voice_clients:
             if isinstance(player, wavelink.Player) and player.playing and not player.paused:
                 try:

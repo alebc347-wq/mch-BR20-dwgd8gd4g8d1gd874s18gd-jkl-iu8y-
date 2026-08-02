@@ -740,69 +740,77 @@ class GuildExam(commands.Cog):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     @tasks.loop(minutes=10)
     async def check_tickets_loop(self):
+        if not getattr(self.bot, "is_active_node", True):
+            return
+
         guild = self.bot.get_guild(TARGET_GUILD_ID)
         if not guild:
             return
 
-        db = self.bot.db.db
-        now = datetime.now(timezone.utc)
+        try:
+            db = self.bot.db.db
+            if not db:
+                return
+            now = datetime.now(timezone.utc)
 
-        # 1. 查詢所有待處理的 Ticket
-        async with db.execute(
-            "SELECT channel_id, user_id, exam_types, assigned_time, status, created_at FROM guild_exam_tickets WHERE status != 'completed' AND status != 'failed'"
-        ) as cursor:
-            rows = await cursor.fetchall()
+            # 1. 查詢所有待處理的 Ticket
+            async with db.execute(
+                "SELECT channel_id, user_id, exam_types, assigned_time, status, created_at FROM guild_exam_tickets WHERE status != 'completed' AND status != 'failed'"
+            ) as cursor:
+                rows = await cursor.fetchall()
 
-        for row in rows:
-            channel_id, user_id, exam_types_json, assigned_time_str, status, created_at_str = row
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                # 頻道已手動刪除，從資料庫中移除
-                await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
-                await db.commit()
-                continue
+            for row in rows:
+                channel_id, user_id, exam_types_json, assigned_time_str, status, created_at_str = row
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    # 頻道已手動刪除，從資料庫中移除
+                    await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
+                    await db.commit()
+                    continue
 
-            # A. 24 小時無考官接單輪替
-            if status == 'waiting_examiner' and assigned_time_str:
-                assigned_time = datetime.fromisoformat(assigned_time_str)
-                if now - assigned_time >= timedelta(hours=24):
-                    # 超過 24 小時，重新指派
-                    try:
-                        exam_types = json.loads(exam_types_json)
-                        await channel.send("⏰ 由於接單期限已過 (24小時無考官接單)，系統正在重新為您尋找其他在線考官...")
-                        await self.assign_examiner(channel, exam_types)
-                    except Exception as e:
-                        print(f"Error re-assigning examiners for channel {channel_id}: {e}")
-
-            # B. 10 天無活動自動關閉
-            try:
-                last_activity = None
-                # 讀取最後一條訊息
-                async for message in channel.history(limit=1):
-                    last_activity = message.created_at
-
-                # 如果沒有任何訊息，則以建立時間為準
-                if not last_activity and created_at_str:
-                    last_activity = datetime.fromisoformat(created_at_str)
-
-                if last_activity:
-                    # 轉換為 offsets-aware 統一時區比對
-                    if last_activity.tzinfo is None:
-                        last_activity = last_activity.replace(tzinfo=timezone.utc)
-                    else:
-                        last_activity = last_activity.astimezone(timezone.utc)
-
-                    if now - last_activity >= timedelta(days=10):
-                        await channel.send("⏰ 此 Ticket 頻道由於 10 天內無 any 新對話與活動，系統將進行自動清理與關閉。")
-                        await asyncio.sleep(5)
+                # A. 24 小時無考官接單輪替
+                if status == 'waiting_examiner' and assigned_time_str:
+                    assigned_time = datetime.fromisoformat(assigned_time_str)
+                    if now - assigned_time >= timedelta(hours=24):
+                        # 超過 24 小時，重新指派
                         try:
-                            await channel.delete()
-                        except Exception:
-                            pass
-                        await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
-                        await db.commit()
-            except Exception as e:
-                print(f"Error checking inactivity for channel {channel_id}: {e}")
+                            exam_types = json.loads(exam_types_json)
+                            await channel.send("⏰ 由於接單期限已過 (24小時無考官接單)，系統正在重新為您尋找其他在線考官...")
+                            await self.assign_examiner(channel, exam_types)
+                        except Exception as e:
+                            print(f"Error re-assigning examiners for channel {channel_id}: {e}")
+
+                # B. 10 天無活動自動關閉
+                try:
+                    last_activity = None
+                    # 讀取最後一條訊息
+                    async for message in channel.history(limit=1):
+                        last_activity = message.created_at
+
+                    # 如果沒有任何訊息，則以建立時間為準
+                    if not last_activity and created_at_str:
+                        last_activity = datetime.fromisoformat(created_at_str)
+
+                    if last_activity:
+                        # 轉換為 offsets-aware 統一時區比對
+                        if last_activity.tzinfo is None:
+                            last_activity = last_activity.replace(tzinfo=timezone.utc)
+                        else:
+                            last_activity = last_activity.astimezone(timezone.utc)
+
+                        if now - last_activity >= timedelta(days=10):
+                            await channel.send("⏰ 此 Ticket 頻道由於 10 天內無 any 新對話與活動，系統將進行自動清理與關閉。")
+                            await asyncio.sleep(5)
+                            try:
+                                await channel.delete()
+                            except Exception:
+                                pass
+                            await db.execute("DELETE FROM guild_exam_tickets WHERE channel_id = ?", (channel_id,))
+                            await db.commit()
+                except Exception as e:
+                    print(f"Error checking inactivity for channel {channel_id}: {e}")
+        except Exception as e:
+            print(f"Error in check_tickets_loop: {e}")
 
     @check_tickets_loop.before_loop
     async def before_check_tickets_loop(self):

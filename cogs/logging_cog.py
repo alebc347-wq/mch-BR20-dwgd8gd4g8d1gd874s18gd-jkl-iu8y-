@@ -713,6 +713,8 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
     @tasks.loop(minutes=10)
     async def pro_reminder_loop(self):
         """每 10 分鐘，若伺服器非 Pro/Ultra，則發送訂閱提示"""
+        if not getattr(self.bot, "is_active_node", True):
+            return
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
             try:
