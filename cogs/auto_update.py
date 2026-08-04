@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import zipfile
+import asyncio
 import aiohttp
 import discord
 from discord.ext import commands
@@ -10,31 +11,48 @@ from discord import app_commands
 # 讀取全域權限繞過 ID
 BYPASS_USER_ID = 1437408048934027274
 
+
 class AutoUpdate(commands.Cog):
-    """機器人自動更新與同步系統"""
-    
+    """高級機器人自動更新與同步系統"""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 讀取環境變數
-        self.repo = os.getenv("GITHUB_REPO")
+        self.repo = os.getenv("GITHUB_REPO", "alebc347-wq/mch-BR20-dwgd8gd4g8d1gd874s18gd-jkl-iu8y-")
         self.branch = os.getenv("GITHUB_BRANCH", "main")
         self.token = os.getenv("GITHUB_TOKEN")
 
     def cog_check(self, ctx: commands.Context) -> bool:
-        """限制只有 Bot 擁有者或 BYPASS ID 能夠使用此 Cog 的指令"""
+        """限制只有 Bot 擁有者或 BYPASS ID 能夠使用此 Cog 的前綴指令"""
         return ctx.author.id == BYPASS_USER_ID or ctx.author.id == self.bot.owner_id
+
+    async def get_current_git_commit(self) -> str:
+        """取得本地最新的 Git Commit Hash 與訊息"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "log", "-1", "--oneline",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0 and stdout:
+                return stdout.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            pass
+        return "未知 Version / 非 Git 倉庫"
 
     @commands.group(name="sync", invoke_without_command=True)
     async def sync_group(self, ctx: commands.Context):
         """同步與自我更新指令組"""
+        commit_info = await self.get_current_git_commit()
         embed = discord.Embed(
-            title="🔄 自動同步自我更新系統",
+            title="🔄 高級自動同步與更新系統",
             description=(
-                f"目前設定的倉庫: `{self.repo or '未設定'}`\n"
-                f"目前設定的分支: `{self.branch}`\n\n"
+                f"**目前版本 (Commit):** `{commit_info}`\n"
+                f"**GitHub 倉庫:** `{self.repo}`\n"
+                f"**分支 (Branch):** `{self.branch}`\n\n"
                 "**可用子指令:**\n"
-                f"`{ctx.prefix}sync run` - 立即從 GitHub 下載最新程式碼並重啟\n"
-                f"`{ctx.prefix}sync info` - 顯示目前更新設定資訊"
+                f"`{ctx.prefix}sync run` - 立即同步最新程式碼並安全重啟\n"
+                f"`{ctx.prefix}sync info` - 顯示目前系統版本與 GitHub 狀態"
             ),
             color=discord.Color.blue()
         )
@@ -43,103 +61,125 @@ class AutoUpdate(commands.Cog):
     @sync_group.command(name="info")
     async def sync_info(self, ctx: commands.Context):
         """顯示目前同步設定資訊"""
+        commit_info = await self.get_current_git_commit()
         has_token = "已設定" if self.token else "未設定"
         embed = discord.Embed(
-            title="ℹ️ 同步系統設定資訊",
+            title="ℹ️ 系統更新與版本資訊",
             description=(
-                f"**GitHub 倉庫:** `{self.repo or '未設定 (請於 .env 設定 GITHUB_REPO)'}`\n"
+                f"**當前版本:** `{commit_info}`\n"
+                f"**GitHub 倉庫:** `{self.repo}`\n"
                 f"**分支 (Branch):** `{self.branch}`\n"
-                f"**GitHub Token:** `{has_token}`\n"
-                f"**說明:** 專案會從 GitHub 下載 `.zip` 封裝，覆蓋除了 `.env`、`.git` 外的檔案，並透過 `execv` 自動重啟。"
+                f"**GitHub Token:** `{has_token}`\n\n"
+                "**更新機制說明:**\n"
+                "1. 優先嘗試 `git pull` 進行高效增量同步。\n"
+                "2. 若環境未支援 Git，會自動切換為 GitHub API Zip 降級下載模式。\n"
+                "3. 下載後自動進行全自動程式碼覆蓋與 `execv` 熱重啟。"
             ),
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
 
     async def run_update_process(self, update_status_func) -> bool:
-        """核心更新與重啟流程，傳入非同步狀態更新回呼函數"""
-        if not self.repo:
-            await update_status_func("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`。")
-            return False
+        """核心更新與重啟流程 (支援 git pull 與 Zip API 雙重備援)"""
+        await update_status_func("🚀 正在啟動升級更新流程...")
 
-        await update_status_func("📥 正在從 GitHub 下載最新程式碼...")
-
-        headers = {
-            "User-Agent": "Discord-Bot-Auto-Updater",
-            "Accept": "application/vnd.github+json"
-        }
-        if self.token:
-            headers["Authorization"] = f"token {self.token}"
-
-        url = f"https://api.github.com/repos/{self.repo}/zipball/{self.branch}"
-
+        # 優先嘗試 Git Pull 方式
+        git_success = False
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status != 200:
-                        text = await response.text()
-                        await update_status_func(f"❌ 下載失敗 (HTTP {response.status}): {text}")
-                        return False
-                    
-                    zip_data = await response.read()
+            await update_status_func("🔄 嘗試使用 `git pull` 進行高效程式碼同步...")
+            proc = await asyncio.create_subprocess_exec(
+                "git", "pull", "origin", self.branch,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            out_str = stdout.decode("utf-8", errors="ignore").strip()
+            err_str = stderr.decode("utf-8", errors="ignore").strip()
 
-            await update_status_func("📦 下載完成，正在解壓縮並覆蓋程式碼...")
-
-            # 在記憶體中解壓縮並覆蓋
-            with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-                for member in z.infolist():
-                    parts = member.filename.split('/')
-                    if len(parts) > 1:
-                        # 判斷是否為目錄
-                        is_dir = member.is_dir() or member.filename.endswith('/') or parts[-1] == ''
-                        
-                        # 清理並重組路徑，移除空元素以防路徑結尾帶斜線
-                        clean_parts = [p for p in parts[1:] if p]
-                        if not clean_parts:
-                            continue
-                            
-                        target_path = os.path.join(*clean_parts)
-                        
-                        # 排除不應覆蓋的檔案與資料夾
-                        if (
-                            target_path.startswith(".env") or 
-                            target_path.startswith(".git") or 
-                            target_path.startswith("data/") or
-                            target_path.startswith("data\\") or
-                            target_path == "deploy_config.json"
-                        ):
-                            continue
-                            
-                        if is_dir:
-                            os.makedirs(target_path, exist_ok=True)
-                        else:
-                            dir_name = os.path.dirname(target_path)
-                            if dir_name:
-                                os.makedirs(dir_name, exist_ok=True)
-                            with open(target_path, "wb") as f:
-                                f.write(z.read(member))
-
-            await update_status_func("✅ 程式碼覆蓋成功！正在進行安全重啟...")
-            
-            # 設定狀態為請勿打擾與正在重新啟動的活動，並等待狀態更新
-            try:
-                await self.bot.change_presence(
-                    status=discord.Status.dnd,
-                    activity=discord.Game("正在重新啟動...")
-                )
-                await asyncio.sleep(1.5)
-            except Exception:
-                pass
-
-            # 設定重啟退出碼並關閉 Bot，觸發 main 中的 execv
-            self.bot.is_restarting = True
-            self.bot.exit_code = 1
-            await self.bot.close()
-            return True
-
+            if proc.returncode == 0:
+                git_success = True
+                await update_status_func(f"✅ `git pull` 同步成功！\n```\n{out_str}\n```")
         except Exception as e:
-            await update_status_func(f"❌ 更新過程中發生錯誤: `{str(e)}`")
-            return False
+            print(f"⚠️ git pull 嘗試失敗: {e}")
+
+        # 如果 Git Pull 失敗或不支援，切換至 GitHub Zip API 下載模式
+        if not git_success:
+            if not self.repo:
+                await update_status_func("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`。")
+                return False
+
+            await update_status_func("📥 正在透過 GitHub API 下載最新程式碼 Zip 包...")
+
+            headers = {
+                "User-Agent": "Discord-Bot-Auto-Updater",
+                "Accept": "application/vnd.github+json"
+            }
+            if self.token:
+                headers["Authorization"] = f"token {self.token}"
+
+            url = f"https://api.github.com/repos/{self.repo}/zipball/{self.branch}"
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers) as response:
+                        if response.status != 200:
+                            text = await response.text()
+                            await update_status_func(f"❌ 下載失敗 (HTTP {response.status}): {text}")
+                            return False
+                        
+                        zip_data = await response.read()
+
+                await update_status_func("📦 Zip 下載完成，正在解壓縮並安全覆蓋程式碼...")
+
+                with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
+                    for member in z.infolist():
+                        parts = member.filename.split('/')
+                        if len(parts) > 1:
+                            is_dir = member.is_dir() or member.filename.endswith('/') or parts[-1] == ''
+                            clean_parts = [p for p in parts[1:] if p]
+                            if not clean_parts:
+                                continue
+                                
+                            target_path = os.path.join(*clean_parts)
+                            
+                            if (
+                                target_path.startswith(".env") or 
+                                target_path.startswith(".git") or 
+                                target_path.startswith("data/") or
+                                target_path.startswith("data\\") or
+                                target_path == "deploy_config.json"
+                            ):
+                                continue
+                                
+                            if is_dir:
+                                os.makedirs(target_path, exist_ok=True)
+                            else:
+                                dir_name = os.path.dirname(target_path)
+                                if dir_name:
+                                    os.makedirs(dir_name, exist_ok=True)
+                                with open(target_path, "wb") as f:
+                                    f.write(z.read(member))
+
+                await update_status_func("✅ Zip 程式碼解壓與覆蓋成功！")
+            except Exception as e:
+                await update_status_func(f"❌ Zip 更新模式出錯: `{str(e)}`")
+                return False
+
+        # 熱重啟流程
+        await update_status_func("🔄 正在啟動系統熱重啟流程 (execv)...")
+        try:
+            await self.bot.change_presence(
+                status=discord.Status.dnd,
+                activity=discord.Game("正在升級重啟中...")
+            )
+            await asyncio.sleep(1.5)
+        except Exception:
+            pass
+
+        self.bot.is_restarting = True
+        self.bot.exit_code = 1
+        await self.bot.close()
+        return True
 
     @sync_group.command(name="run")
     async def sync_run(self, ctx: commands.Context):
