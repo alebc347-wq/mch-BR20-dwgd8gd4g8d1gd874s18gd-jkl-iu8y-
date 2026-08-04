@@ -1800,6 +1800,27 @@ class TTSInteractiveView(discord.ui.View):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="vacuum_db", description="🗜️ 執行 SQLite VACUUM 壓縮資料庫以釋放磁碟空間 (管理員限定)")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def vacuum_db(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            db = self.bot.db.db
+            # VACUUM 可釋放 SQLite 資料庫中的已刪除資料佔用空間
+            await db.execute("VACUUM;")
+            embed = EmbedFactory.success(
+                "資料庫壓縮成功",
+                "✅ 已成功執行 SQLite **VACUUM** 操作！\n"
+                "資料庫中刪除的舊資料空間已釋放，磁碟佔用應已降低。\n\n"
+                "⚠️ 若磁碟仍顯示 `disk is full`，請至 **Wispbyte 控制台** 手動清理伺服器容器空間！"
+            )
+        except Exception as e:
+            embed = EmbedFactory.error(
+                "VACUUM 執行失敗",
+                f"錯誤訊息：`{e}`"
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
 

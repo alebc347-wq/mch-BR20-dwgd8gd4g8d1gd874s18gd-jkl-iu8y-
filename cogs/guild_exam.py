@@ -1160,11 +1160,14 @@ class GuildExam(commands.Cog):
                         await interaction.channel.send(f"⚠️ 無法為成員加上核心成員身份組: {e}")
 
                 # 新增核心成員至資料庫名單
-                await db.execute(
-                    "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
-                    (student.id, "")
-                )
-                await db.commit()
+                try:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+                        (student.id, "")
+                    )
+                    await db.commit()
+                except Exception as e:
+                    print(f"⚠️ 資料庫寫入失敗: {e}")
 
                 await interaction.channel.send(f"🎉 **恭喜 {student.mention} 通過考試，成功加入！**")
                 
@@ -1357,11 +1360,17 @@ class GuildExam(commands.Cog):
         member_channel: discord.TextChannel
     ):
         db = self.bot.db.db
-        await db.execute(
-            "INSERT OR REPLACE INTO guild_exam_settings (guild_id, panel_channel_id, category_id, member_channel_id) VALUES (?, ?, ?, ?)",
-            (interaction.guild.id, panel_channel.id, category.id, member_channel.id)
-        )
-        await db.commit()
+        try:
+            await db.execute(
+                "INSERT OR REPLACE INTO guild_exam_settings (guild_id, panel_channel_id, category_id, member_channel_id) VALUES (?, ?, ?, ?)",
+                (interaction.guild.id, panel_channel.id, category.id, member_channel.id)
+            )
+            await db.commit()
+        except Exception as e:
+            return await interaction.response.send_message(
+                f"❌ 設定寫入失敗: `{e}`\n若出現 `disk is full`，請至 Wispbyte 控制台清理磁碗空間！",
+                ephemeral=True
+            )
 
         await interaction.response.send_message(
             embed=EmbedFactory.success(
