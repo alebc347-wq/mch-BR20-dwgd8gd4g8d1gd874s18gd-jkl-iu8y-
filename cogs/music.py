@@ -1096,6 +1096,16 @@ class Music(commands.Cog):
                 identifier="TriniumHost-Nodelink02",
                 uri="https://nodelink-02.triniumhost.com:443",
                 password="trinium"
+            ),
+            wavelink.Node(
+                identifier="Lava-Rocks-SSL",
+                uri="https://lava.rocks:443",
+                password="youshallnotpass"
+            ),
+            wavelink.Node(
+                identifier="FreeLavalink-SSL",
+                uri="https://freelavalink.com:443",
+                password="youshallnotpass"
             )
         ]
         
