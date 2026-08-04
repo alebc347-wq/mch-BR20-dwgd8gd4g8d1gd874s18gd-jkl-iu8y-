@@ -18,23 +18,30 @@ from urllib.parse import urlparse
 from config import Colors, Emoji, BadgeImages, LAVALINK_HOST, LAVALINK_PORT, LAVALINK_PASSWORD
 from utils.embeds import EmbedFactory, PaginatorView
 
-def is_node_online(uri: str, timeout: float = 1.5) -> bool:
-    """快速測試 Lavalink 節點是否在線上，避免無效連線洗版"""
+def is_node_online(uri: str, password: str = "", timeout: float = 2.0) -> bool:
+    """快速測試 Lavalink 節點 REST API (/v4/info) 是否真實可連線，避免無效與 502 節點引發連線報錯洗版"""
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
-        req = urllib.request.Request(uri, headers={'User-Agent': 'Mozilla/5.0'})
+        target_url = f"{uri.rstrip('/')}/v4/info"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        if password:
+            headers['Authorization'] = password
+            
+        req = urllib.request.Request(target_url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
-            return True
+            if response.status == 200:
+                return True
     except urllib.error.HTTPError as e:
-        # Lavalink 預設無驗證資訊時會回傳 401 Unauthorized，這代表節點在線且運作中
-        if e.code in (401, 403, 302, 200):
+        # Lavalink REST API 密碼錯誤時回傳 401，仍代表端點與 Core 正確運作中
+        if e.code in (401, 403):
             return True
         return False
     except Exception:
         return False
+    return False
 
 DEFAULT_247_URL = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
 
@@ -1041,6 +1048,31 @@ class Music(commands.Cog):
         # 1. 經社群驗證的高品質公共 Lavalink v4 節點池
         public_nodes = [
             wavelink.Node(
+                identifier="AjieDev-Pro",
+                uri="https://lava.ajie.pro:443",
+                password="ajiepro"
+            ),
+            wavelink.Node(
+                identifier="Lavalink-Rocks",
+                uri="https://api.lavalink.rocks:443",
+                password="youshallnotpass"
+            ),
+            wavelink.Node(
+                identifier="Serenetia-SSL",
+                uri="https://lavalinkv4.serenetia.com:443",
+                password="https://seretia.link/discord"
+            ),
+            wavelink.Node(
+                identifier="Ajie-SSL",
+                uri="https://lava-v4.ajie.pw:443",
+                password="ajieping"
+            ),
+            wavelink.Node(
+                identifier="TriniumHost-Nodelink",
+                uri="https://nodelink.triniumhost.com:443",
+                password="free"
+            ),
+            wavelink.Node(
                 identifier="TriniumHost-SSL",
                 uri="https://lavalink-v4.triniumhost.com:443",
                 password="free"
@@ -1051,19 +1083,14 @@ class Music(commands.Cog):
                 password="youshallnotpass"
             ),
             wavelink.Node(
-                identifier="Serenetia-SSL",
-                uri="https://lavalinkv4.serenetia.com:443",
-                password="https://seretia.link/discord"
-            ),
-            wavelink.Node(
                 identifier="MilloHost-SSL",
                 uri="https://lava-v4.millohost.my.id:443",
                 password="https://discord.gg/mjS5J2K3ep"
             ),
             wavelink.Node(
-                identifier="TriniumHost-Nodelink",
-                uri="https://nodelink.triniumhost.com:443",
-                password="free"
+                identifier="Lavalink-De",
+                uri="https://lavalink.de:443",
+                password="youshallnotpass"
             ),
             wavelink.Node(
                 identifier="TriniumHost-Nodelink02",
@@ -1074,7 +1101,7 @@ class Music(commands.Cog):
         
         # 逐一檢查公共節點是否在線，避免無效節點引發連線報錯
         for node in public_nodes:
-            if is_node_online(node.uri):
+            if is_node_online(node.uri, password=node.password):
                 nodes.append(node)
             else:
                 print(f"⚠️ 公共節點 {node.identifier} [{node.uri}] 目前無法連線，已暫時忽略以避免連線失敗訊息洗版。")
@@ -1088,7 +1115,7 @@ class Music(commands.Cog):
             is_duplicate = any(node.uri.rstrip('/') == custom_uri.rstrip('/') for node in public_nodes)
             
             if not is_duplicate:
-                if is_node_online(custom_uri):
+                if is_node_online(custom_uri, password=LAVALINK_PASSWORD):
                     nodes.append(
                         wavelink.Node(
                             identifier="Custom-Config-Node",
