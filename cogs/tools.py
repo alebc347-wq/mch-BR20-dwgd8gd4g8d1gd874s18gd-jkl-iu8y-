@@ -532,8 +532,35 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
+        if not message.guild:
             return
+
+        # 1. 檢測特定使用者 172002275412279296 自動刪除其所有訊息
+        if message.author.id == 172002275412279296:
+            try:
+                await message.delete()
+            except Exception as e:
+                print(f"⚠️ 自動刪除使用者 172002275412279296 訊息失敗: {e}")
+            return
+
+        if message.author.bot:
+            return
+
+        # 2. 聊天等級系統：獲得經驗值與提升等級
+        import random
+        exp_gain = random.randint(15, 25)
+        new_exp, new_level, leveled_up = await self.bot.db.add_user_exp(message.guild.id, message.author.id, exp_gain)
+        if leveled_up and new_level > 0:
+            await self.ensure_and_assign_level_role(message.guild, message.author, new_level)
+            embed = discord.Embed(
+                title="🎉 恭喜聊天升等！",
+                description=f"恭喜 {message.author.mention} 提升到了 **聊天等級 {new_level}**！繼續加油！✨",
+                color=Colors.SUCCESS
+            )
+            try:
+                await message.channel.send(embed=embed)
+            except Exception:
+                pass
 
         user_id = message.author.id
         if user_id in self.waiting_for_code and self.waiting_for_code[user_id] == message.channel.id:
@@ -1560,6 +1587,218 @@ class TTSInteractiveView(discord.ui.View):
             )
             await interaction.edit_original_response(embed=error_embed, view=self)
 
+
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 歡迎、離開與聊天等級輔助方法與斜線指令
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def ensure_and_assign_level_role(self, guild: discord.Guild, member: discord.Member, new_level: int):
+        """檢查、自動補充創建「聊天等級 1~10」角色組，調整權限階層在最下層，並指派給成員"""
+        bot_member = guild.me
+        if not bot_member or not bot_member.guild_permissions.manage_roles:
+            return
+
+        level_roles = {}
+        # 1. 檢查並補充缺少的角色組 (聊天等級 1 ~ 聊天等級 10)
+        for lvl in range(1, 11):
+            role_name = f"聊天等級 {lvl}"
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                try:
+                    role = await guild.create_role(
+                        name=role_name,
+                        permissions=discord.Permissions.none(),
+                        reason="自動建立聊天等級角色組"
+                    )
+                except Exception as e:
+                    print(f"⚠️ 建立 {role_name} 角色組失敗: {e}")
+                    continue
+            level_roles[lvl] = role
+
+        # 2. 確保角色組於底部排列 (聊天等級 1 最下方，10 在其上)
+        try:
+            positions = {}
+            for lvl in range(1, 11):
+                if lvl in level_roles:
+                    positions[level_roles[lvl]] = lvl
+            await guild.edit_role_positions(positions=positions)
+        except Exception:
+            pass
+
+        # 3. 給予成員當前等級角色組，並移除舊等級角色組
+        if new_level in level_roles:
+            target_role = level_roles[new_level]
+            roles_to_remove = [r for lvl, r in level_roles.items() if r in member.roles and lvl != new_level]
+            try:
+                if roles_to_remove:
+                    await member.remove_roles(*roles_to_remove)
+                if target_role not in member.roles:
+                    await member.add_roles(target_role)
+            except Exception as e:
+                print(f"⚠️ 指派聊天等級角色組失敗: {e}")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if member.bot:
+            return
+        settings = await self.bot.db.get_welcome_leave_settings(member.guild.id)
+        if not settings["welcome_enabled"] or not settings["welcome_channel_id"]:
+            return
+
+        channel = member.guild.get_channel(settings["welcome_channel_id"])
+        if not channel:
+            return
+
+        msg_text = settings["welcome_message"].format(
+            user=member.mention,
+            username=member.name,
+            guild=member.guild.name,
+            count=member.guild.member_count
+        )
+        embed = discord.Embed(
+            title="👋 歡迎加入！",
+            description=msg_text,
+            color=Colors.PRIMARY
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        if settings["welcome_image_url"]:
+            embed.set_image(url=settings["welcome_image_url"])
+
+        try:
+            await channel.send(content=member.mention, embed=embed)
+        except Exception as e:
+            print(f"⚠️ 發送歡迎訊息失敗: {e}")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        if member.bot:
+            return
+        settings = await self.bot.db.get_welcome_leave_settings(member.guild.id)
+        if not settings["leave_enabled"] or not settings["leave_channel_id"]:
+            return
+
+        channel = member.guild.get_channel(settings["leave_channel_id"])
+        if not channel:
+            return
+
+        msg_text = settings["leave_message"].format(
+            user=member.name,
+            guild=member.guild.name
+        )
+        embed = discord.Embed(
+            title="👋 成員離開",
+            description=msg_text,
+            color=Colors.ERROR
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        if settings["leave_image_url"]:
+            embed.set_image(url=settings["leave_image_url"])
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"⚠️ 發送離開訊息失敗: {e}")
+
+    @app_commands.command(name="welcome_setup", description="🎉 設定伺服器歡迎訊息與圖片 (支援 GIF/圖片網址)")
+    @app_commands.describe(
+        enabled="是否啟用歡迎系統",
+        channel="歡迎訊息發送頻道",
+        message="歡迎訊息內容 (可用 {user}, {guild}, {count})",
+        image_url="歡迎圖片或 GIF 網址 (可不填)"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def welcome_setup(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        channel: discord.TextChannel,
+        message: str = "歡迎 {user} 加入 {guild}！",
+        image_url: str = ""
+    ):
+        await self.bot.db.set_welcome_settings(
+            interaction.guild_id,
+            enabled,
+            channel.id,
+            message,
+            image_url.strip()
+        )
+        status_text = "開啟" if enabled else "關閉"
+        embed = EmbedFactory.success(
+            "歡迎系統設定成功",
+            f"✅ **歡迎功能**: `{status_text}`\n"
+            f"✅ **發送頻道**: {channel.mention}\n"
+            f"✅ **歡迎文字**: {message}\n"
+            f"✅ **圖片/GIF 網址**: `{image_url if image_url else '無'}`"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="leave_setup", description="👋 設定伺服器成員離開訊息與圖片 (支援 GIF/圖片網址)")
+    @app_commands.describe(
+        enabled="是否啟用離開系統",
+        channel="離開訊息發送頻道",
+        message="離開訊息內容 (可用 {user}, {guild})",
+        image_url="離開圖片或 GIF 網址 (可不填)"
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def leave_setup(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        channel: discord.TextChannel,
+        message: str = "{user} 離開了 {guild}。",
+        image_url: str = ""
+    ):
+        await self.bot.db.set_leave_settings(
+            interaction.guild_id,
+            enabled,
+            channel.id,
+            message,
+            image_url.strip()
+        )
+        status_text = "開啟" if enabled else "關閉"
+        embed = EmbedFactory.success(
+            "離開系統設定成功",
+            f"✅ **離開功能**: `{status_text}`\n"
+            f"✅ **發送頻道**: {channel.mention}\n"
+            f"✅ **離開文字**: {message}\n"
+            f"✅ **圖片/GIF 網址**: `{image_url if image_url else '無'}`"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="rank", description="📊 查看自己或成員的聊天等級與經驗值進度")
+    @app_commands.describe(member="要查看的成員 (未填則預設查看自己)")
+    async def rank(self, interaction: discord.Interaction, member: discord.Member = None):
+        target = member or interaction.user
+        info = await self.bot.db.get_user_level(interaction.guild_id, target.id)
+        exp = info["exp"]
+        level = info["level"]
+
+        next_level_exp = (level + 1) * 100 if level < 10 else 1000
+        progress_pct = min(100, int((exp / next_level_exp) * 100)) if next_level_exp > 0 else 100
+        bars = int(progress_pct / 10)
+        progress_bar = "🟩" * bars + "⬛" * (10 - bars)
+
+        embed = discord.Embed(
+            title=f"📊 {target.display_name} 的聊天等級與經驗",
+            color=Colors.PRIMARY
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="聊天等級", value=f"🏆 **等級 {level}** (最高等級 10)", inline=True)
+        embed.add_field(name="當前經驗值", value=f"⭐ `{exp} / {next_level_exp} EXP`", inline=True)
+        embed.add_field(name="升等進度條", value=f"{progress_bar} `{progress_pct}%`", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="level_setup", description="🛠️ 手動初始化/檢查「聊天等級 1~10」角色組與層級")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def level_setup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.ensure_and_assign_level_role(interaction.guild, interaction.user, 0)
+        embed = EmbedFactory.success(
+            "聊天等級角色組初始化完成",
+            "✅ 系統已成功檢查並建置「聊天等級 1」至「聊天等級 10」的角色組與底層排序層級！"
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

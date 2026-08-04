@@ -259,13 +259,27 @@ class Database:
                 message_id INTEGER
             );
 
-            -- 競爭者名單成員
-            CREATE TABLE IF NOT EXISTS competitor_roster (
+            -- 歡迎與離開設定
+            CREATE TABLE IF NOT EXISTS welcome_leave_settings (
+                guild_id INTEGER PRIMARY KEY,
+                welcome_enabled INTEGER DEFAULT 0,
+                welcome_channel_id INTEGER,
+                welcome_message TEXT DEFAULT '歡迎 {user} 加入 {guild}！',
+                welcome_image_url TEXT DEFAULT '',
+                leave_enabled INTEGER DEFAULT 0,
+                leave_channel_id INTEGER,
+                leave_message TEXT DEFAULT '{user} 離開了 {guild}。',
+                leave_image_url TEXT DEFAULT ''
+            );
+
+            -- 聊天等級與經驗值
+            CREATE TABLE IF NOT EXISTS user_levels (
                 guild_id INTEGER NOT NULL,
-                discord_id INTEGER NOT NULL,
-                roblox_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, discord_id)
+                user_id INTEGER NOT NULL,
+                exp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 0,
+                last_exp_time TEXT,
+                PRIMARY KEY (guild_id, user_id)
             );
         """)
         await self.db.commit()
@@ -1085,3 +1099,92 @@ class Database:
         )
         await self.db.commit()
         return cursor.rowcount > 0
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 歡迎與離開系統設定
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def get_welcome_leave_settings(self, guild_id: int) -> dict:
+        async with self.db.execute(
+            "SELECT welcome_enabled, welcome_channel_id, welcome_message, welcome_image_url, leave_enabled, leave_channel_id, leave_message, leave_image_url FROM welcome_leave_settings WHERE guild_id = ?",
+            (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return {
+                    "welcome_enabled": False,
+                    "welcome_channel_id": None,
+                    "welcome_message": "歡迎 {user} 加入 {guild}！",
+                    "welcome_image_url": "",
+                    "leave_enabled": False,
+                    "leave_channel_id": None,
+                    "leave_message": "{user} 離開了 {guild}。",
+                    "leave_image_url": ""
+                }
+            return {
+                "welcome_enabled": bool(row[0]),
+                "welcome_channel_id": row[1],
+                "welcome_message": row[2] or "歡迎 {user} 加入 {guild}！",
+                "welcome_image_url": row[3] or "",
+                "leave_enabled": bool(row[4]),
+                "leave_channel_id": row[5],
+                "leave_message": row[6] or "{user} 離開了 {guild}。",
+                "leave_image_url": row[7] or ""
+            }
+
+    async def set_welcome_settings(self, guild_id: int, enabled: bool, channel_id: int, message: str, image_url: str = ""):
+        await self.db.execute(
+            "INSERT INTO welcome_leave_settings (guild_id, welcome_enabled, welcome_channel_id, welcome_message, welcome_image_url) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET welcome_enabled=excluded.welcome_enabled, welcome_channel_id=excluded.welcome_channel_id, welcome_message=excluded.welcome_message, welcome_image_url=excluded.welcome_image_url",
+            (guild_id, 1 if enabled else 0, channel_id, message, image_url)
+        )
+        await self.db.commit()
+
+    async def set_leave_settings(self, guild_id: int, enabled: bool, channel_id: int, message: str, image_url: str = ""):
+        await self.db.execute(
+            "INSERT INTO welcome_leave_settings (guild_id, leave_enabled, leave_channel_id, leave_message, leave_image_url) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET leave_enabled=excluded.leave_enabled, leave_channel_id=excluded.leave_channel_id, leave_message=excluded.leave_message, leave_image_url=excluded.leave_image_url",
+            (guild_id, 1 if enabled else 0, channel_id, message, image_url)
+        )
+        await self.db.commit()
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 聊天等級與經驗值系統
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def get_user_level(self, guild_id: int, user_id: int) -> dict:
+        async with self.db.execute(
+            "SELECT exp, level, last_exp_time FROM user_levels WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return {"exp": 0, "level": 0, "last_exp_time": None}
+            return {"exp": row[0], "level": row[1], "last_exp_time": row[2]}
+
+    async def add_user_exp(self, guild_id: int, user_id: int, exp_to_add: int) -> tuple[int, int, bool]:
+        """給予使用者經驗值，回傳 (new_exp, new_level, leveled_up)"""
+        now_str = datetime.now(timezone.utc).isoformat()
+        current = await self.get_user_level(guild_id, user_id)
+        
+        # 檢查 cooldown (25 秒)
+        if current["last_exp_time"]:
+            try:
+                last_time = datetime.fromisoformat(current["last_exp_time"])
+                if (datetime.now(timezone.utc) - last_time).total_seconds() < 25:
+                    return current["exp"], current["level"], False
+            except Exception:
+                pass
+
+        new_exp = current["exp"] + exp_to_add
+        # 等級公式: 每 100 EXP 升 1 級，上限為 10 級
+        new_level = min(10, max(1, new_exp // 100)) if new_exp >= 100 else 0
+        leveled_up = new_level > current["level"]
+
+        await self.db.execute(
+            "INSERT INTO user_levels (guild_id, user_id, exp, level, last_exp_time) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET exp=excluded.exp, level=excluded.level, last_exp_time=excluded.last_exp_time",
+            (guild_id, user_id, new_exp, new_level, now_str)
+        )
+        await self.db.commit()
+        return new_exp, new_level, leveled_up
