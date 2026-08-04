@@ -19,11 +19,9 @@ from config import Colors, Emoji, BadgeImages, LAVALINK_HOST, LAVALINK_PORT, LAV
 from utils.embeds import EmbedFactory, PaginatorView
 
 def is_node_online(uri: str, password: str = "", timeout: float = 2.5) -> bool:
-    """測試 Lavalink 節點 WebSocket (/v4/websocket) 是否真實支援 Upgrade 連線，徹底排除 502/524 假在線節點"""
+    """測試 Lavalink 節點 WebSocket (/v4/websocket) 與 SSL 憑證是否真實有效，徹底排除 502/524 及 SSL Mismatch 節點"""
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         
         target_url = f"{uri.rstrip('/')}/v4/websocket"
         headers = {
@@ -1096,11 +1094,7 @@ class Music(commands.Cog):
                 uri="https://lava-v4.millohost.my.id:443",
                 password="https://discord.gg/mjS5J2K3ep"
             ),
-            wavelink.Node(
-                identifier="Lavalink-De",
-                uri="https://lavalink.de:443",
-                password="youshallnotpass"
-            ),
+
             wavelink.Node(
                 identifier="TriniumHost-Nodelink02",
                 uri="https://nodelink-02.triniumhost.com:443",
