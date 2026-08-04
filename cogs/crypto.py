@@ -229,7 +229,7 @@ class DecodeView(discord.ui.View):
 # Cog 主體
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class Crypto(commands.Cog):
+class Crypto(commands.GroupCog, name="crypto", description="🔐 編碼與解碼工具系統"):
     """編碼/解碼系統 — Base64, Hex, Morse, Caesar 等"""
 
     def __init__(self, bot: commands.Bot):

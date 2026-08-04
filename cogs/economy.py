@@ -16,7 +16,7 @@ from config import Colors
 from utils.embeds import EmbedFactory
 
 
-class Economy(commands.Cog):
+class Economy(commands.GroupCog, name="economy", description="💰 經濟與金幣系統"):
     """經濟系統 — 金幣、簽到、轉帳、排行榜"""
 
     def __init__(self, bot: commands.Bot):

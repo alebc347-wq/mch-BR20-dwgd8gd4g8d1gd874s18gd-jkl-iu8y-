@@ -61,7 +61,7 @@ class GiveawayJoinButton(discord.ui.View):
             )
 
 
-class Giveaway(commands.Cog):
+class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器抽獎系統"):
     """抽獎系統"""
 
     def __init__(self, bot: commands.Bot):

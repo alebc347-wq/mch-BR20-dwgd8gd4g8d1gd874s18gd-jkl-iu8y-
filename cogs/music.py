@@ -1009,7 +1009,7 @@ class AskListenView(discord.ui.View):
 # 主 Music Cog 類別
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class Music(commands.Cog):
+class Music(commands.GroupCog, name="music", description="🎵 音樂播放與控制系統"):
     """音樂系統 — Lavalink (Wavelink v3)"""
 
     def __init__(self, bot: commands.Bot):

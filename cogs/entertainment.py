@@ -256,7 +256,7 @@ class GuessView(discord.ui.View):
 # 主要 Cog
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class Entertainment(commands.Cog):
+class Entertainment(commands.GroupCog, name="fun", description="🎮 娛樂與迷你遊戲系統"):
     """娛樂系統 — 迷你遊戲"""
 
     def __init__(self, bot: commands.Bot):

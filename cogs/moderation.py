@@ -15,7 +15,7 @@ from utils.embeds import EmbedFactory, ConfirmView, UserProfileButton
 from utils.checks import check_hierarchy, check_member_hierarchy
 
 
-class Moderation(commands.Cog):
+class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器管理與懲處系統"):
     """管理系統 — 踢出、封禁、禁言、警告"""
 
     def __init__(self, bot: commands.Bot):

@@ -11,7 +11,7 @@ import random
 from config import Colors
 
 
-class FunText(commands.Cog):
+class FunText(commands.GroupCog, name="funtext", description="✍️ 趣味文字系統"):
     """趣味文字 — 各種文字轉換與趣味指令"""
 
     def __init__(self, bot: commands.Bot):
