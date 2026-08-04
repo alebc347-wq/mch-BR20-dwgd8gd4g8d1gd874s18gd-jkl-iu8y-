@@ -426,7 +426,7 @@ class ProBot(commands.Bot):
             self.tree.add_command(add_status)
             self.tree.add_command(restart)
             synced = await self.tree.sync()
-            print(f"✅ 已同步 {len(synced)} 個 Slash Commands")
+            print(f"✅ 已全域同步 {len(synced)} 個 Slash Commands")
         except Exception as e:
             print(f"❌ 同步 Slash Commands 失敗: {e}")
 
@@ -441,6 +441,15 @@ class ProBot(commands.Bot):
 ║     前綴: {BOT_PREFIX:<30} ║
 ╚══════════════════════════════════════════╝
         """)
+
+        # 即時同步 Slash Commands 到各個伺服器 (避開 Discord 1小時全域延遲)
+        for g in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=g)
+                await self.tree.sync(guild=g)
+                print(f"✅ 已即時同步 Slash Commands 至伺服器: {g.name}")
+            except Exception as ex:
+                print(f"⚠️ 即時同步至伺服器 {g.name} 失敗: {ex}")
         # 啟動完畢，切換回線上狀態，並設定預設活動
         await self.change_presence(
             activity=discord.Activity(
