@@ -146,14 +146,62 @@ class AutoUpdate(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    async def run_cleanup(self) -> str:
+        """更新前自動清理磁碟空間：刪除 __pycache__、data/ 暫存媒體、SQLite VACUUM"""
+        freed = 0
+        report = []
+
+        # 1. 刪除所有 __pycache__
+        for root, dirs, files in os.walk("."):
+            for d in dirs:
+                if d == "__pycache__":
+                    import shutil
+                    full = os.path.join(root, d)
+                    try:
+                        size = sum(os.path.getsize(os.path.join(full, f)) for f in os.listdir(full) if os.path.isfile(os.path.join(full, f)))
+                        shutil.rmtree(full)
+                        freed += size
+                    except Exception:
+                        pass
+
+        # 2. 刪除 data/ 內的暫存媒體 (TTS mp3/wav、version png 等)
+        temp_exts = {".mp3", ".wav", ".png"}
+        data_dir = "data"
+        if os.path.isdir(data_dir):
+            for fname in os.listdir(data_dir):
+                fpath = os.path.join(data_dir, fname)
+                if os.path.isfile(fpath) and os.path.splitext(fname)[1].lower() in temp_exts:
+                    try:
+                        size = os.path.getsize(fpath)
+                        os.remove(fpath)
+                        freed += size
+                    except Exception:
+                        pass
+
+        # 3. SQLite VACUUM
+        try:
+            db = self.bot.db.db
+            await db.execute("VACUUM;")
+        except Exception:
+            pass
+
+        report.append(f"🧹 預清理完成！已釋放約 **{freed // 1024} KB** 磁碟空間。")
+        return "\n".join(report)
+
     async def run_update_process(self, update_status_func) -> bool:
-        """核心更新與重啟流程 (支援 git pull 與 Zip API 雙重備援)"""
+        """核心更新與重啟流程：先清理磁碟 → git pull → (Zip 備援)"""
         await update_status_func("🚀 正在啟動升級更新流程...")
 
-        # 優先嘗試 Git Pull 方式
+        # Step 0: 更新前自動清理磁碟
+        await update_status_func("🧹 Step 0/3: 正在清理磁碟暫存空間...")
+        cleanup_result = await self.run_cleanup()
+        await update_status_func(cleanup_result)
+
+        # Step 1: 優先嘗試 git pull (不需要額外磁碟空間)
         git_success = False
+        git_err_str = ""
         try:
-            await update_status_func("🔄 嘗試使用 `git pull` 進行高效程式碼同步...")
+            await update_status_func("🔄 Step 1/3: 嘗試使用 `git pull` 高效增量同步...")
             proc = await asyncio.create_subprocess_exec(
                 "git", "pull", "origin", self.branch,
                 stdout=asyncio.subprocess.PIPE,
@@ -161,21 +209,24 @@ class AutoUpdate(commands.Cog):
             )
             stdout, stderr = await proc.communicate()
             out_str = stdout.decode("utf-8", errors="ignore").strip()
-            err_str = stderr.decode("utf-8", errors="ignore").strip()
+            git_err_str = stderr.decode("utf-8", errors="ignore").strip()
 
             if proc.returncode == 0:
                 git_success = True
-                await update_status_func(f"✅ `git pull` 同步成功！\n```\n{out_str}\n```")
+                await update_status_func(f"✅ `git pull` 同步成功！\n```\n{out_str or 'Already up to date.'}\n```")
+            else:
+                await update_status_func(f"⚠️ `git pull` 回傳錯誤碼 {proc.returncode}，嘗試 Zip 備援...\n```\n{git_err_str}\n```")
         except Exception as e:
-            print(f"⚠️ git pull 嘗試失敗: {e}")
+            git_err_str = str(e)
+            await update_status_func(f"⚠️ `git pull` 指令不可用: `{e}`，切換至 Zip 備援模式...")
 
-        # 如果 Git Pull 失敗或不支援，切換至 GitHub Zip API 下載模式
+        # Step 2: Zip 備援模式 (git pull 失敗時才啟動)
         if not git_success:
             if not self.repo:
                 await update_status_func("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`。")
                 return False
 
-            await update_status_func("📥 正在透過 GitHub API 下載最新程式碼 Zip 包...")
+            await update_status_func("📥 Step 2/3: 透過 GitHub API 下載最新程式碼 Zip...")
 
             headers = {
                 "User-Agent": "Discord-Bot-Auto-Updater",
@@ -193,10 +244,9 @@ class AutoUpdate(commands.Cog):
                             text = await response.text()
                             await update_status_func(f"❌ 下載失敗 (HTTP {response.status}): {text}")
                             return False
-                        
                         zip_data = await response.read()
 
-                await update_status_func("📦 Zip 下載完成，正在解壓縮並安全覆蓋程式碼...")
+                await update_status_func("📦 Zip 下載完成，正在解壓縮並覆蓋程式碼...")
 
                 with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
                     for member in z.infolist():
@@ -206,18 +256,15 @@ class AutoUpdate(commands.Cog):
                             clean_parts = [p for p in parts[1:] if p]
                             if not clean_parts:
                                 continue
-                                
                             target_path = os.path.join(*clean_parts)
-                            
                             if (
-                                target_path.startswith(".env") or 
-                                target_path.startswith(".git") or 
+                                target_path.startswith(".env") or
+                                target_path.startswith(".git") or
                                 target_path.startswith("data/") or
                                 target_path.startswith("data\\") or
                                 target_path == "deploy_config.json"
                             ):
                                 continue
-                                
                             if is_dir:
                                 os.makedirs(target_path, exist_ok=True)
                             else:
@@ -227,19 +274,25 @@ class AutoUpdate(commands.Cog):
                                 with open(target_path, "wb") as f:
                                     f.write(z.read(member))
 
-                await update_status_func("✅ Zip 程式碼解壓與覆蓋成功！")
+                await update_status_func("✅ Zip 解壓覆蓋成功！")
             except OSError as e:
-                if getattr(e, 'errno', None) == 28 or "No space left on device" in str(e):
+                if getattr(e, 'errno', None) == 28 or "No space left" in str(e):
                     await update_status_func(
-                        "⚠️ **伺服器主機空間已滿 ([Errno 28] No space left on device)**\n"
-                        "請至 Wispbyte / Pterodactyl 控制台清理容器內部非必要日誌或檔案，或嘗試運行 `.sync` 使用 `git pull` 同步！"
+                        "❌ **磁碟空間不足 ([Errno 28] No space left on device)**\n\n"
+                        "預清理後仍然空間不足，請至 **Wispbyte 控制台** 手動刪除容器內以下目錄：\n"
+                        "• `/home/container/__pycache__/`\n"
+                        "• `/home/container/cogs/__pycache__/`\n"
+                        "• `/home/container/utils/__pycache__/`\n"
+                        "• `/home/container/data/*.mp3`\n\n"
+                        "清理後重新執行 `.sync run` 即可！"
                     )
                 else:
-                    await update_status_func(f"❌ Zip 更新模式出錯: `{str(e)}`")
+                    await update_status_func(f"❌ Zip 更新失敗: `{e}`")
                 return False
             except Exception as e:
-                await update_status_func(f"❌ Zip 更新模式出錯: `{str(e)}`")
+                await update_status_func(f"❌ Zip 更新失敗: `{e}`")
                 return False
+
 
         # 熱重啟流程
         await update_status_func("🔄 正在啟動系統熱重啟流程 (execv)...")
