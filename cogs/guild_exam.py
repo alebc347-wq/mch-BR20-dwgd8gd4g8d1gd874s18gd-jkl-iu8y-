@@ -1362,6 +1362,69 @@ class GuildExam(commands.Cog):
         embed.description = details
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # 核心成員管理子群組
+    members_group = app_commands.Group(name="member", description="管理核心成員名單")
+
+    @members_group.command(name="add", description="手動新增成員至戰隊核心成員名單")
+    @app_commands.describe(member="要新增的核心成員", note="備註說明 (例如: 950連勝!)")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @is_guild_limited()
+    async def member_add(self, interaction: discord.Interaction, member: discord.Member, note: str = ""):
+        db = self.bot.db.db
+        note_formatted = f"  {note.strip()}  " if note.strip() else ""
+        await db.execute("INSERT OR REPLACE INTO guild_core_members (user_id, note) VALUES (?, ?)", (member.id, note_formatted))
+        await db.commit()
+
+        role = interaction.guild.get_role(ROLE_APPLICANT)
+        if role and role not in member.roles:
+            try:
+                await member.add_roles(role)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(f"✅ 已成功將 {member.mention} 新增至核心成員名單！", ephemeral=True)
+        await self.update_member_list(interaction.guild)
+
+    @members_group.command(name="remove", description="將成員從戰隊核心成員名單中移除")
+    @app_commands.describe(member="要移除的核心成員")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @is_guild_limited()
+    async def member_remove(self, interaction: discord.Interaction, member: discord.Member):
+        db = self.bot.db.db
+        await db.execute("DELETE FROM guild_core_members WHERE user_id = ?", (member.id,))
+        await db.commit()
+
+        role = interaction.guild.get_role(ROLE_APPLICANT)
+        if role and role in member.roles:
+            try:
+                await member.remove_roles(role)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(f"✅ 已成功將 {member.mention} 從核心成員名單中移除！", ephemeral=True)
+        await self.update_member_list(interaction.guild)
+
+    @members_group.command(name="list", description="列出當前所有戰隊核心成員")
+    @is_guild_limited()
+    async def member_list(self, interaction: discord.Interaction):
+        db = self.bot.db.db
+        async with db.execute("SELECT user_id, note FROM guild_core_members") as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return await interaction.response.send_message("❌ 目前尚無任何核心成員資料。", ephemeral=True)
+
+        embed = discord.Embed(title="👥 當前戰隊核心成員名單", color=Colors.PRIMARY)
+        details = []
+        for uid, note in rows:
+            m = interaction.guild.get_member(uid)
+            name = m.mention if m else f"ID: {uid}"
+            note_str = f" `{note.strip()}`" if note and note.strip() else ""
+            details.append(f"• {name}{note_str}")
+
+        embed.description = "\n".join(details)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 考官語音業績追蹤與結算系統
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
