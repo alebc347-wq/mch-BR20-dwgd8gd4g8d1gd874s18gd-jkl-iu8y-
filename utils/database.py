@@ -492,20 +492,24 @@ class Database:
             (user_id, guild_id),
         ) as cursor:
             row = await cursor.fetchone()
-            if row and row[1] == message_hash:
-                new_count = row[0] + 1
-                await self.db.execute(
-                    "UPDATE spam_tracker SET count = ?, last_message_at = ? WHERE user_id = ? AND guild_id = ?",
-                    (new_count, now, user_id, guild_id),
-                )
-            else:
-                new_count = 1
-                await self.db.execute(
-                    "INSERT OR REPLACE INTO spam_tracker (user_id, guild_id, message_hash, count, last_message_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, guild_id, message_hash, 1, now),
-                )
-            await self.db.commit()
-            return new_count
+            try:
+                if row and row[1] == message_hash:
+                    new_count = row[0] + 1
+                    await self.db.execute(
+                        "UPDATE spam_tracker SET count = ?, last_message_at = ? WHERE user_id = ? AND guild_id = ?",
+                        (new_count, now, user_id, guild_id),
+                    )
+                else:
+                    new_count = 1
+                    await self.db.execute(
+                        "INSERT OR REPLACE INTO spam_tracker (user_id, guild_id, message_hash, count, last_message_at) VALUES (?, ?, ?, ?, ?)",
+                        (user_id, guild_id, message_hash, 1, now),
+                    )
+                await self.db.commit()
+                return new_count
+            except Exception as e:
+                print(f"⚠️ track_message 寫入失敗: {e}")
+                return 1
 
     async def reset_spam_tracker(self, user_id: int, guild_id: int) -> None:
         """重置刷屏追蹤"""
@@ -1181,10 +1185,15 @@ class Database:
         new_level = min(10, max(1, new_exp // 100)) if new_exp >= 100 else 0
         leveled_up = new_level > current["level"]
 
-        await self.db.execute(
-            "INSERT INTO user_levels (guild_id, user_id, exp, level, last_exp_time) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET exp=excluded.exp, level=excluded.level, last_exp_time=excluded.last_exp_time",
-            (guild_id, user_id, new_exp, new_level, now_str)
-        )
-        await self.db.commit()
+        try:
+            await self.db.execute(
+                "INSERT INTO user_levels (guild_id, user_id, exp, level, last_exp_time) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(guild_id, user_id) DO UPDATE SET exp=excluded.exp, level=excluded.level, last_exp_time=excluded.last_exp_time",
+                (guild_id, user_id, new_exp, new_level, now_str)
+            )
+            await self.db.commit()
+        except Exception as e:
+            print(f"⚠️ 寫入用戶經驗值資料庫失敗: {e}")
+            return current["exp"], current["level"], False
+
         return new_exp, new_level, leveled_up

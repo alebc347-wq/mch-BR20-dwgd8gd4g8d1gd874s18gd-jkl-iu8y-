@@ -107,30 +107,39 @@ class ExamRegisterModal(discord.ui.Modal):
         level_val = int(nums[0]) if nums else 0
 
         if level_val >= 200:
-            # 1. 賦予核心成員身分組
-            role = guild.get_role(ROLE_APPLICANT)
-            if role:
-                try:
-                    await interaction.user.add_roles(role)
-                except Exception as e:
-                    print(f"⚠️ 自動賦予核心成員身分組失敗: {e}")
-
-            # 2. 新增核心成員至資料庫名單
-            await db.execute(
-                "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
-                (interaction.user.id, "")
+            # 200等以上改為審核制：發送審核按鈕給最高權限者 (BYPASS_USER_ID 1437408048934027274)
+            audit_embed = discord.Embed(
+                title="🎯 收到 200 等以上免試審核申請",
+                description="有考生提交了 200 等以上的報名資料，請最高管理員點擊下方按鈕進行審核：",
+                color=discord.Color.gold()
             )
-            await db.commit()
+            audit_embed.add_field(name="考生", value=interaction.user.mention, inline=True)
+            audit_embed.add_field(name="遊戲等級", value=f"`{self.level.value}`", inline=True)
+            audit_embed.add_field(name="勝率", value=f"`{self.win_rate.value}`", inline=True)
+            audit_embed.add_field(name="牌位", value=f"`{self.rank.value}`", inline=True)
+            audit_embed.set_footer(text=f"考生 ID: {interaction.user.id}")
 
-            # 3. 自動更新戰隊成員名單
-            cog = self.bot.get_cog("GuildExam")
-            if cog:
-                await cog.update_member_list(guild)
+            view = Exam200AuditView(self.bot, interaction.user.id)
 
-            # 4. 直接跟考生告知通過訊息
+            bypass_member = guild.get_member(BYPASS_USER_ID)
+            ping_str = bypass_member.mention if bypass_member else f"<@{BYPASS_USER_ID}>"
+
+            target_chan = interaction.channel
+            async with db.execute("SELECT panel_channel_id FROM guild_exam_settings WHERE guild_id = ?", (guild.id,)) as cursor:
+                r = await cursor.fetchone()
+                if r and r[0]:
+                    c = guild.get_channel(r[0])
+                    if c:
+                        target_chan = c
+
+            try:
+                await target_chan.send(content=f"🔔 {ping_str} 收到新的 200 等免試審核申請！", embed=audit_embed, view=view)
+            except Exception:
+                await interaction.channel.send(content=f"🔔 {ping_str} 收到新的 200 等免試審核申請！", embed=audit_embed, view=view)
+
             return await interaction.followup.send(
-                f"🎉 **恭喜 {interaction.user.mention}！**\n"
-                f"檢測到您的遊戲等級已達 **{level_val} 等**（200等以上免試政策），系統已自動審核通過並將您加入戰隊成員名單！",
+                f"📝 **報名資料已送出！**\n"
+                f"檢測到您的等級已達 **{level_val} 等**，系統已將您的免試申請送交最高管理員 ({ping_str}) 進行審核。審核同意後將自動發放 <@&{ROLE_APPLICANT}> 身分組並加入戰隊成員名單！",
                 ephemeral=True
             )
 
@@ -562,6 +571,115 @@ class ExaminerTypeSelectView(discord.ui.View):
         self.stop()
 
 
+class Exam200AuditView(discord.ui.View):
+    """200等以上免試申請 審核 View (持久化按鈕)"""
+
+    def __init__(self, bot, applicant_id: int = 0):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.applicant_id = applicant_id
+
+    @discord.ui.button(
+        label="同意免試通過",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="guild_exam:audit_approve"
+    )
+    async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_allowed = interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator
+        if not is_allowed:
+            return await interaction.response.send_message("❌ 只有團長/最高管理員可以審核此免試申請！", ephemeral=True)
+
+        await interaction.response.defer()
+        guild = interaction.guild
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        applicant_id = self.applicant_id
+        if not applicant_id and embed:
+            for field in embed.fields:
+                if field.name == "考生":
+                    import re
+                    m = re.search(r'\d+', field.value)
+                    if m:
+                        applicant_id = int(m.group(0))
+
+        if not applicant_id:
+            return await interaction.followup.send("❌ 無法辨識被審核的考生 ID！", ephemeral=True)
+
+        student = guild.get_member(applicant_id)
+        if not student:
+            try:
+                student = await guild.fetch_member(applicant_id)
+            except Exception:
+                pass
+
+        db = self.bot.db.db
+
+        # 1. 賦予已通過身分組 (ROLE_APPLICANT: 1478335180069671044)
+        role = guild.get_role(ROLE_APPLICANT)
+        if not role:
+            role = discord.utils.get(guild.roles, id=ROLE_APPLICANT)
+        if role and student:
+            try:
+                if role not in student.roles:
+                    await student.add_roles(role)
+            except Exception as e:
+                print(f"⚠️ 賦予通過身分組失敗: {e}")
+
+        # 2. 新增至戰隊核心成員資料庫
+        await db.execute(
+            "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+            (applicant_id, "")
+        )
+        await db.commit()
+
+        # 3. 更新戰隊名單
+        cog = self.bot.get_cog("GuildExam")
+        if cog:
+            await cog.update_member_list(guild)
+
+        # 4. 更新審核 Embed 與停用按鈕
+        for child in self.children:
+            child.disabled = True
+
+        new_embed = embed if embed else discord.Embed(title="🎯 200等免試審核通過", color=discord.Color.green())
+        new_embed.title = "✅ 200等免試申請審核通過"
+        new_embed.color = discord.Color.green()
+        new_embed.add_field(name="審核者", value=interaction.user.mention, inline=True)
+        new_embed.set_footer(text=f"已由 {interaction.user.display_name} 核准通過並加入戰隊成員名單")
+
+        await interaction.message.edit(embed=new_embed, view=self)
+
+        if student:
+            try:
+                await student.send(f"🎉 恭喜！您的 200 等免試申請已由管理員 {interaction.user.mention} 審核通過，已將您加入戰隊成員名單並賦予 <@&{ROLE_APPLICANT}> 身分組！")
+            except Exception:
+                pass
+
+    @discord.ui.button(
+        label="拒絕申請",
+        style=discord.ButtonStyle.danger,
+        emoji="❌",
+        custom_id="guild_exam:audit_reject"
+    )
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_allowed = interaction.user.id == BYPASS_USER_ID or interaction.user.guild_permissions.administrator
+        if not is_allowed:
+            return await interaction.response.send_message("❌ 只有團長/最高管理員可以審核此免試申請！", ephemeral=True)
+
+        await interaction.response.defer()
+
+        for child in self.children:
+            child.disabled = True
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(title="❌ 免試審核拒絕")
+        embed.title = "❌ 200等免試申請已拒絕"
+        embed.color = discord.Color.red()
+        embed.add_field(name="審核者", value=interaction.user.mention, inline=True)
+
+        await interaction.message.edit(embed=embed, view=self)
+
+
 class DeployGuildExamView(discord.ui.View):
     """考試面板 Deploy 視圖"""
 
@@ -631,8 +749,9 @@ class GuildExam(commands.Cog):
         self.performance_settle_loop.cancel()
 
     async def cog_load(self):
-        # 註冊持久化按鈕
+        # 註冊持久化按鈕 (重啟後繼續可用)
         self.bot.add_view(DeployGuildExamView(self.bot))
+        self.bot.add_view(Exam200AuditView(self.bot))
         await self.init_db()
         # 重新加載所有進行中 Ticket 的持久化 View
         self.bot.loop.create_task(self.reload_active_views())
@@ -1065,22 +1184,29 @@ class GuildExam(commands.Cog):
     # 戰隊名單動態渲染與發送
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     async def update_member_list(self, guild: discord.Guild):
-        """根據伺服器角色組與考官資料庫更新成員名單"""
+        """根據伺服器角色組與考官資料庫更新成員名單 (固定編輯現有訊息)"""
         db = self.bot.db.db
 
-        # 讀取設定
+        # 預設成員名單頻道 ID 為 1472873824914772121
+        member_channel_id = 1472873824914772121
+        last_message_id = None
+
         async with db.execute(
             "SELECT member_channel_id, member_list_message_id FROM guild_exam_settings WHERE guild_id = ?",
             (guild.id,)
         ) as cursor:
             row = await cursor.fetchone()
-            if not row or not row[0]:
-                return
-            member_channel_id, last_message_id = row
+            if row:
+                if row[0]:
+                    member_channel_id = row[0]
+                last_message_id = row[1]
 
         channel = guild.get_channel(member_channel_id)
         if not channel:
-            return
+            try:
+                channel = await guild.fetch_channel(member_channel_id)
+            except Exception:
+                return
 
         # 撈取考官分類
         knife_list = []
@@ -1111,23 +1237,69 @@ class GuildExam(commands.Cog):
                 note_str = note if note else ""
                 core_members.append(f"➤ <@{uid}>{note_str}")
 
-        # 組合戰隊名單字串 (使用原有的 Discord 表情符號字串格式)
+        # 組合戰隊名單字串 (使用標準 Unicode Emoji)
         roster_text = (
             "╔════════════════════╗\n"
-            "               :4_: 戰 隊 名 單  :2_: \n"
+            "               ✨ 戰 隊 名 單 ✨ \n"
             "╚════════════════════╝\n\n"
-            ":pepegunshot: 【團長】\n"
-            f"➤ <@{BYPASS_USER_ID}>   :cooldiamondshapeamethystgemjewel: \n\n"
-            " <:Archnemesis:1473248275871043736> 【副團長】\n"
+            "👑 【團長】\n"
+            f"➤ <@{BYPASS_USER_ID}>   💎 \n\n"
+            " ⚔️ 【副團長】\n"
             f"➤ <@1458091320764661922>\n\n"
-            "<:__:1473201415206866944>  【副副團長】\n"
+            " 🛡️ 【副副團長】\n"
             f"➤ <@1438132914712744009>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            ":smileycat: 【考官陣容】\n\n"
-            ":catdead: 小刀考官\n"
+            "🎓 【考官陣容】\n\n"
+            "🔪 小刀考官\n"
             f"{chr(10).join(knife_list) if knife_list else '➤ *(無)*'}\n\n"
-            ":chipichapa:  狙擊考官\n"
+            "🎯 狙擊考官\n"
             f"{chr(10).join(sniper_list) if sniper_list else '➤ *(無)*'}\n\n"
+            "🔫 步槍考官\n"
+            f"{chr(10).join(rifle_list) if rifle_list else '➤ *(無)*'}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🛠️ 【管理團隊】\n"
+            f"➤ <@1451749600636702751>\n"
+            f"➤ <@1437408048934027274>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "👥 【核心成員】\n"
+            f"{chr(10).join(core_members) if core_members else '➤ *(無)*'}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🌟 【Youtube】\n"
+            f"<@&{ROLE_YOUTUBE}>\n\n"
+            "⚔️ 「不是最強，但一定最敢打」🏆"
+        )
+
+        sent_msg = None
+        if last_message_id:
+            try:
+                msg = await channel.fetch_message(last_message_id)
+                await msg.edit(content=roster_text)
+                sent_msg = msg
+            except Exception:
+                pass
+
+        if not sent_msg:
+            # 搜尋頻道中 Bot 發送過的最新成員名單訊息進行編輯
+            try:
+                async for historic_msg in channel.history(limit=20):
+                    if historic_msg.author.id == self.bot.user.id and "戰 隊 名 單" in historic_msg.content:
+                        await historic_msg.edit(content=roster_text)
+                        sent_msg = historic_msg
+                        break
+            except Exception:
+                pass
+
+        if not sent_msg:
+            # 找不到舊訊息時才發送新訊息
+            sent_msg = await channel.send(content=roster_text)
+
+        if sent_msg:
+            await db.execute(
+                "INSERT INTO guild_exam_settings (guild_id, member_channel_id, member_list_message_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET member_channel_id=excluded.member_channel_id, member_list_message_id=excluded.member_list_message_id",
+                (guild.id, member_channel_id, sent_msg.id)
+            )
+            await db.commit()
             ":blobfishbruh: 步槍考官\n"
             f"{chr(10).join(rifle_list) if rifle_list else '➤ *(無)*'}\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
