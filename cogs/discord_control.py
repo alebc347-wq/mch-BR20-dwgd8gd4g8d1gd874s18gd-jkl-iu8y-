@@ -115,8 +115,8 @@ class DiscordControl(commands.Cog):
         """處理按鈕點擊互動"""
         try:
             await interaction.response.defer(ephemeral=True)
-        except (discord.NotFound, discord.HTTPException) as err:
-            print(f"⚠️ 總控按鈕回應超時或無效 (可能因網路延遲或已過期): {err}")
+        except (discord.NotFound, discord.HTTPException):
+            # 靜默忽略已過期或由另一台主機處理完畢的 interaction，避免日誌洗版
             return
 
         channel = self.bot.get_channel(self.channel_id)
@@ -567,10 +567,33 @@ class DiscordControl(commands.Cog):
             # 6. 更新並儲存回 Discord
             try:
                 new_embed = self.build_embed(data)
-                await message.edit(embed=new_embed)
+                now_ts = time.time()
+                last_edit = getattr(self, "_last_message_edit_time", 0)
+                
+                # 比對 Embed 關鍵視覺屬性與時間，若無狀態變更且距上次編輯未滿 30 秒則跳過，防止 PATCH 觸發 429 限流
+                should_update = False
+                if now_ts - last_edit >= 30:
+                    should_update = True
+                elif message.embeds:
+                    old_e = message.embeds[0]
+                    if (old_e.description != new_embed.description or 
+                        len(old_e.fields) != len(new_embed.fields) or
+                        any(f1.name != f2.name or f1.value != f2.value for f1, f2 in zip(old_e.fields, new_embed.fields))):
+                        should_update = True
+                else:
+                    should_update = True
+                    
+                if should_update:
+                    await message.edit(embed=new_embed)
+                    self._last_message_edit_time = now_ts
             except discord.NotFound:
                 self.coordination_msg = None
                 raise
+            except discord.HTTPException as http_err:
+                if http_err.status == 429:
+                    pass  # 觸發 Discord 限流時靜默忽略，待下個週期再自動更新
+                else:
+                    print(f"⚠️ [總控協調] 編輯訊息失敗: {http_err}")
 
             # 7. 定時備份 (每 20 次 loop，約 5 分鐘)
             if getattr(self.bot, "is_active_node", True):
