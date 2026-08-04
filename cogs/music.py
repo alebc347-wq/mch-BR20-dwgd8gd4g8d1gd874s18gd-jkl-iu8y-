@@ -18,25 +18,34 @@ from urllib.parse import urlparse
 from config import Colors, Emoji, BadgeImages, LAVALINK_HOST, LAVALINK_PORT, LAVALINK_PASSWORD
 from utils.embeds import EmbedFactory, PaginatorView
 
-def is_node_online(uri: str, password: str = "", timeout: float = 2.0) -> bool:
-    """快速測試 Lavalink 節點 REST API (/v4/info) 是否真實可連線，避免無效與 502 節點引發連線報錯洗版"""
+def is_node_online(uri: str, password: str = "", timeout: float = 2.5) -> bool:
+    """測試 Lavalink 節點 WebSocket (/v4/websocket) 是否真實支援 Upgrade 連線，徹底排除 502/524 假在線節點"""
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
-        target_url = f"{uri.rstrip('/')}/v4/info"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        target_url = f"{uri.rstrip('/')}/v4/websocket"
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Upgrade': 'websocket',
+            'Connection': 'Upgrade',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+            'Client-Name': 'Wavelink/3.0.0',
+            'User-Id': '123456789'
+        }
         if password:
             headers['Authorization'] = password
             
         req = urllib.request.Request(target_url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
-            if response.status == 200:
+            if response.status in (101, 401, 403):
                 return True
     except urllib.error.HTTPError as e:
-        # Lavalink REST API 密碼錯誤時回傳 401，仍代表端點與 Core 正確運作中
-        if e.code in (401, 403):
+        # HTTP Status 101 (Switching Protocols) 代表 WebSocket 手握正常
+        # 即使密碼不符回傳 401/403，仍代表 WS 服務與 Protocol 正確運作
+        if e.code in (101, 401, 403):
             return True
         return False
     except Exception:
@@ -1137,11 +1146,14 @@ class Music(commands.Cog):
                 else:
                     print(f"⚠️ 自訂節點 [{LAVALINK_HOST}:{LAVALINK_PORT}] 目前未啟動或無法連線，已暫時忽略以避免錯誤洗版。")
         
-        try:
-            await wavelink.Pool.connect(nodes=nodes, client=self.bot)
-            print("✅ Wavelink 已成功連接 Lavalink 節點池！")
-        except Exception as e:
-            print(f"❌ Wavelink 連接節點池失敗: {e}")
+        if nodes:
+            try:
+                await wavelink.Pool.connect(nodes=nodes, client=self.bot)
+                print(f"✅ Wavelink 已成功連接 {len(nodes)} 個 Lavalink 節點！")
+            except Exception as e:
+                print(f"❌ Wavelink 連接節點池失敗: {e}")
+        else:
+            print("⚠️ 目前沒有發現可用的 Lavalink WebSocket 節點，已自動跳過連線以保證機器人正常啟動。")
 
     async def _search_with_failover(self, query: str) -> list[wavelink.Playable] | wavelink.Playlist | None:
         """
