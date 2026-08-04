@@ -15,6 +15,9 @@ venv/
 # Data
 data/*.db
 data/*.json
+data/*.png
+data/*.mp3
+data/*.wav
 
 # IDE
 .vscode/
@@ -25,3 +28,14 @@ data/*.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Temp/Scratch 大型垃圾檔案
+scratch/
+scratch_*.json
+scratch_*.txt
+invidious_results.json
+patch_fix.txt
+da388f804_user_manual.md
+*.png
+!assets/**/*.png
+!assets/*.png
