@@ -46,7 +46,7 @@ DEFAULT_CORE_MEMBERS = [
     (1438482564384817194, ""),
     (1442071283830620221, ""),
     (1391986586446594088, ""),
-    (1161313819520405626, "  950連勝!!  :modstreak: "),
+    (1161313819520405626, "  950連勝!!  🔥 "),
     (1446673715973722112, ""),
     (1454822286484832307, ""),
     (1401099920345399347, ""),
@@ -99,6 +99,40 @@ class ExamRegisterModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         db = self.bot.db.db
         guild = interaction.guild
+
+        # 檢查等級是否達到 200 等以上 (免試直過政策)
+        import re
+        level_str = self.level.value
+        nums = re.findall(r'\d+', level_str)
+        level_val = int(nums[0]) if nums else 0
+
+        if level_val >= 200:
+            # 1. 賦予核心成員身分組
+            role = guild.get_role(ROLE_APPLICANT)
+            if role:
+                try:
+                    await interaction.user.add_roles(role)
+                except Exception as e:
+                    print(f"⚠️ 自動賦予核心成員身分組失敗: {e}")
+
+            # 2. 新增核心成員至資料庫名單
+            await db.execute(
+                "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+                (interaction.user.id, "")
+            )
+            await db.commit()
+
+            # 3. 自動更新戰隊成員名單
+            cog = self.bot.get_cog("GuildExam")
+            if cog:
+                await cog.update_member_list(guild)
+
+            # 4. 直接跟考生告知通過訊息
+            return await interaction.followup.send(
+                f"🎉 **恭喜 {interaction.user.mention}！**\n"
+                f"檢測到您的遊戲等級已達 **{level_val} 等**（200等以上免試政策），系統已自動審核通過並將您加入戰隊成員名單！",
+                ephemeral=True
+            )
 
         # 遞增 Ticket 計數器
         await db.execute(
