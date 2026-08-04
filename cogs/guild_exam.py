@@ -1300,39 +1300,6 @@ class GuildExam(commands.Cog):
                 (guild.id, member_channel_id, sent_msg.id)
             )
             await db.commit()
-            ":blobfishbruh: 步槍考官\n"
-            f"{chr(10).join(rifle_list) if rifle_list else '➤ *(無)*'}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            ":catok: 【管理團隊】\n"
-            f"➤ <@1451749600636702751>\n"
-            f"➤ <@1437408048934027274>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            ":cat_wawa: 【核心成員】\n"
-            f"{chr(10).join(core_members) if core_members else '➤ *(無)*'}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "<:GoldRank:1473249089947697243> 【Youtube】\n"
-            f"<@&{ROLE_YOUTUBE}>\n\n"
-            "<:Archnemesis:1473248275871043736> 「不是最強，但一定最敢打」<:NemisisRank:1473248937598128260>"
-        )
-
-        sent_msg = None
-        if last_message_id:
-            try:
-                msg = await channel.fetch_message(last_message_id)
-                await msg.edit(content=roster_text)
-                sent_msg = msg
-            except Exception:
-                # 找不到舊訊息或已被刪除，則發送新的
-                sent_msg = await channel.send(content=roster_text)
-        else:
-            sent_msg = await channel.send(content=roster_text)
-
-        if sent_msg:
-            await db.execute(
-                "UPDATE guild_exam_settings SET member_list_message_id = ? WHERE guild_id = ?",
-                (sent_msg.id, guild.id)
-            )
-            await db.commit()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 監聽關閉命令

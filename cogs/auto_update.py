@@ -40,7 +40,7 @@ class AutoUpdate(commands.Cog):
             pass
         return "未知 Version / 非 Git 倉庫"
 
-    @commands.command(name="v", aliases=["version", "ver", "changelog"])
+    @commands.command(name="v", aliases=["ver", "changelog"])
     async def version_command(self, ctx: commands.Context):
         """顯示機器人版本與最新更新履歷"""
         commit_info = await self.get_current_git_commit()
@@ -74,8 +74,8 @@ class AutoUpdate(commands.Cog):
         embed.set_footer(text="勇者 2.0 高可用系統 ｜ 隨時自動同步最優化版本")
         await ctx.send(embed=embed)
 
-    @app_commands.command(name="version", description="ℹ️ 查看機器人目前版本與最新更新紀錄履歷")
-    async def slash_version(self, interaction: discord.Interaction):
+    @app_commands.command(name="changelog", description="ℹ️ 查看機器人最新更新紀錄與版本履歷")
+    async def slash_changelog(self, interaction: discord.Interaction):
         commit_info = await self.get_current_git_commit()
         embed = discord.Embed(
             title="🚀 勇者 2.0 系統版本與最新更新履歷",
@@ -228,6 +228,15 @@ class AutoUpdate(commands.Cog):
                                     f.write(z.read(member))
 
                 await update_status_func("✅ Zip 程式碼解壓與覆蓋成功！")
+            except OSError as e:
+                if getattr(e, 'errno', None) == 28 or "No space left on device" in str(e):
+                    await update_status_func(
+                        "⚠️ **伺服器主機空間已滿 ([Errno 28] No space left on device)**\n"
+                        "請至 Wispbyte / Pterodactyl 控制台清理容器內部非必要日誌或檔案，或嘗試運行 `.sync` 使用 `git pull` 同步！"
+                    )
+                else:
+                    await update_status_func(f"❌ Zip 更新模式出錯: `{str(e)}`")
+                return False
             except Exception as e:
                 await update_status_func(f"❌ Zip 更新模式出錯: `{str(e)}`")
                 return False

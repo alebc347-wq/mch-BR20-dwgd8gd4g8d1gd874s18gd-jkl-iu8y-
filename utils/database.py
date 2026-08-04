@@ -23,6 +23,14 @@ class Database:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         self.db = await aiosqlite.connect(DB_PATH)
         self.db.row_factory = aiosqlite.Row
+
+        # 設定記憶體內 journal 與 temp_store，大幅減少實體磁碟佔用與避免 disk full (Errno 28)
+        try:
+            await self.db.execute("PRAGMA journal_mode = TRUNCATE;")
+            await self.db.execute("PRAGMA temp_store = MEMORY;")
+            await self.db.execute("PRAGMA synchronous = OFF;")
+        except Exception as e:
+            print(f"⚠️ PRAGMA 設定調整失敗: {e}")
         await self._create_tables()
         
         # 自動遷移舊的 YouTube Channel ID 預設值為 @CalebYT-t1g
