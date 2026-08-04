@@ -40,6 +40,73 @@ class AutoUpdate(commands.Cog):
             pass
         return "未知 Version / 非 Git 倉庫"
 
+    @commands.command(name="v", aliases=["version", "ver", "changelog"])
+    async def version_command(self, ctx: commands.Context):
+        """顯示機器人版本與最新更新履歷"""
+        commit_info = await self.get_current_git_commit()
+        embed = discord.Embed(
+            title="🚀 勇者 2.0 系統版本與最新更新履歷",
+            description=(
+                f"📌 **當前發行版本:** `v2.5.0-Release`\n"
+                f"🏷️ **Git Commit:** `{commit_info}`\n"
+                f"🌐 **GitHub 倉庫:** `{self.repo}` (`{self.branch}`)\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "✨ **【最新更新履歷 (Release Changelog)】** ✨\n\n"
+                "1. 🎉 **歡迎 & 離開圖文通知系統**\n"
+                "   • 新增 `/tool welcome_setup` 與 `/tool leave_setup`。\n"
+                "   • 支援自訂歡迎/離開文字、動態變數（`{user}`, `{guild}`, `{count}`）與 GIF/圖片網址。\n\n"
+                "2. 🏆 **聊天等級系統 (Leveling 1 ~ 10)**\n"
+                "   • 發言自動累積經驗升等（包含升等亮眼通告 Embed）。\n"
+                "   • 自動檢測與創建「聊天等級 1」至「聊天等級 10」角色組，並精確放置於身分組最底部層級。\n"
+                "   • 升等自動賦予新等級身分組並自動清理舊身分組。\n"
+                "   • 提供 `/tool rank` 查詢個人經驗與等級進度條。\n\n"
+                "3. ⚔️ **戰隊考試 200 等免試直過政策**\n"
+                "   • 報名表單填寫遊戲等級 >= 200 等時，自動核准通過免試，並即時自動更新戰隊成員名單。\n"
+                "   • 戰隊成員名單表情符號全面升級為標準美觀 Unicode Emoji。\n"
+                "   • 提供 `/member add`, `/member remove`, `/member list` 管理名單。\n\n"
+                "4. 🚫 **指定違規用戶自動刪除**\n"
+                "   • 自動偵測與攔截刪除特定違規使用者 (`172002275412279296`) 之發言。\n\n"
+                "5. ⚡ **斜線指令階層優化與即時同步**\n"
+                "   • 解決 Discord 100 個頂層斜線指令限制，指令即時同步至各伺服器。"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="勇者 2.0 高可用系統 ｜ 隨時自動同步最優化版本")
+        await ctx.send(embed=embed)
+
+    @app_commands.command(name="version", description="ℹ️ 查看機器人目前版本與最新更新紀錄履歷")
+    async def slash_version(self, interaction: discord.Interaction):
+        commit_info = await self.get_current_git_commit()
+        embed = discord.Embed(
+            title="🚀 勇者 2.0 系統版本與最新更新履歷",
+            description=(
+                f"📌 **當前發行版本:** `v2.5.0-Release`\n"
+                f"🏷️ **Git Commit:** `{commit_info}`\n"
+                f"🌐 **GitHub 倉庫:** `{self.repo}` (`{self.branch}`)\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "✨ **【最新更新履歷 (Release Changelog)】** ✨\n\n"
+                "1. 🎉 **歡迎 & 離開圖文通知系統**\n"
+                "   • 新增 `/tool welcome_setup` 與 `/tool leave_setup`。\n"
+                "   • 支援自訂歡迎/離開文字、動態變數（`{user}`, `{guild}`, `{count}`）與 GIF/圖片網址。\n\n"
+                "2. 🏆 **聊天等級系統 (Leveling 1 ~ 10)**\n"
+                "   • 發言自動累積經驗升等（包含升等亮眼通告 Embed）。\n"
+                "   • 自動檢測與創建「聊天等級 1」至「聊天等級 10」角色組，並精確放置於身分組最底部層級。\n"
+                "   • 升等自動賦予新等級身分組並自動清理舊身分組。\n"
+                "   • 提供 `/tool rank` 查詢個人經驗與等級進度條。\n\n"
+                "3. ⚔️ **戰隊考試 200 等免試直過政策**\n"
+                "   • 報名表單填寫遊戲等級 >= 200 等時，自動核准通過免試，並即時自動更新戰隊成員名單。\n"
+                "   • 戰隊成員名單表情符號全面升級為標準美觀 Unicode Emoji。\n"
+                "   • 提供 `/member add`, `/member remove`, `/member list` 管理名單。\n\n"
+                "4. 🚫 **指定違規用戶自動刪除**\n"
+                "   • 自動偵測與攔截刪除特定違規使用者 (`172002275412279296`) 之發言。\n\n"
+                "5. ⚡ **斜線指令階層優化與即時同步**\n"
+                "   • 解決 Discord 100 個頂層斜線指令限制，指令即時同步至各伺服器。"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="勇者 2.0 高可用系統 ｜ 隨時自動同步最優化版本")
+        await interaction.response.send_message(embed=embed)
+
     @commands.group(name="sync", invoke_without_command=True)
     async def sync_group(self, ctx: commands.Context):
         """同步與自我更新指令組"""
