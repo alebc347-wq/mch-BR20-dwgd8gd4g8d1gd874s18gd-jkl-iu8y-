@@ -18,6 +18,34 @@ STYLE_MAP = {
     "danger": discord.ButtonStyle.danger,
 }
 
+def build_custom_id(role_id: int, required_role_id: int = None) -> str:
+    """
+    建立按鈕的 custom_id。
+    格式：claim_role_{role_id}                              （無前置身份組）
+          claim_role_{role_id}__req_{required_role_id}      （有前置身份組）
+    """
+    if required_role_id:
+        return f"claim_role_{role_id}__req_{required_role_id}"
+    return f"claim_role_{role_id}"
+
+def parse_custom_id(custom_id: str):
+    """
+    解析 custom_id，回傳 (role_id, required_role_id)。
+    required_role_id 為 None 表示無前置限制。
+    """
+    if "__req_" in custom_id:
+        parts = custom_id.split("__req_")
+        role_id_str = parts[0].replace("claim_role_", "")
+        req_id_str = parts[1]
+        if role_id_str.isdigit() and req_id_str.isdigit():
+            return int(role_id_str), int(req_id_str)
+        return None, None
+    else:
+        role_id_str = custom_id.replace("claim_role_", "")
+        if role_id_str.isdigit():
+            return int(role_id_str), None
+        return None, None
+
 class RoleClaim(commands.Cog):
     """自訂身分組領取系統"""
 
@@ -28,12 +56,18 @@ class RoleClaim(commands.Cog):
     @commands.guild_only()
     @commands.has_permissions(manage_roles=True)
     async def gro(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], *, description_or_color: str = None):
-        """建立身分組領取面板 (.gro @身分組1 [@身分組2 ...] [顏色] [說明文字])"""
+        """建立身分組領取面板
+        
+        用法：.gro @身分組1 [@身分組2 ...] [顏色] [說明文字]
+             .gro @身分組1 --req @前置身份組 [顏色] [說明文字]
+        
+        使用 --req @身份組 可限制只有擁有指定身份組的人才能領取。
+        """
         await ctx.message.delete()
 
         if not roles:
             return await ctx.send(
-                "❌ 請提供至少一個有效的身分組！\n💡 使用格式：`.gro @身分組1 [@身分組2 ...] [顏色] [說明文字]`",
+                "❌ 請提供至少一個有效的身分組！\n💡 使用格式：`.gro @身分組1 [@身分組2 ...] [顏色] [說明文字]`\n💡 限制資格：加入 `--req @前置身份組` 可設定前置身份組要求",
                 delete_after=7
             )
 
@@ -42,34 +76,50 @@ class RoleClaim(commands.Cog):
             if ctx.guild.me.top_role <= r:
                 return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {r.name} 才能建立領取按鈕！", delete_after=5)
 
+        # --- 解析 --req 參數 ---
+        required_role: discord.Role = None
+        remaining = description_or_color or ""
+
+        if "--req" in remaining:
+            req_parts = remaining.split("--req", 1)
+            remaining = req_parts[0].strip()
+            req_str = req_parts[1].strip()
+            req_id_str = req_str.split()[0] if req_str else ""
+            req_id_str = req_id_str.strip("<@&>")
+            if req_id_str.isdigit():
+                required_role = ctx.guild.get_role(int(req_id_str))
+                if not required_role:
+                    return await ctx.send("❌ 找不到 `--req` 所指定的身份組，請確認是否正確！", delete_after=5)
+
         style = discord.ButtonStyle.primary
         description = "點擊下方按鈕以領取或取消對應的身分組："
-        
-        if description_or_color:
-            parts = description_or_color.split(maxsplit=1)
+
+        if remaining:
+            parts = remaining.split(maxsplit=1)
             first_word = parts[0].lower()
             if first_word in STYLE_MAP:
                 style = STYLE_MAP[first_word]
                 if len(parts) > 1:
                     description = parts[1]
             else:
-                description = description_or_color
+                description = remaining
 
         # 建立身分組提及列表
         role_mentions = "\n".join([f"• {r.mention}" for r in roles])
+        req_hint = f"\n\n🔒 **需要擁有 {required_role.mention} 才能領取**" if required_role else ""
 
         embed = discord.Embed(
             title="🏷️ 身分組領取中心",
-            description=f"{description}\n\n{role_mentions}",
+            description=f"{description}{req_hint}\n\n{role_mentions}",
             color=roles[0].color if roles[0].color != discord.Color.default() else Colors.PRIMARY
         )
-        
+
         view = discord.ui.View(timeout=None)
         for r in roles:
             btn = discord.ui.Button(
                 style=style,
                 label=r.name,
-                custom_id=f"claim_role_{r.id}",
+                custom_id=build_custom_id(r.id, required_role.id if required_role else None),
                 emoji="🏷️"
             )
             view.add_item(btn)
@@ -79,13 +129,19 @@ class RoleClaim(commands.Cog):
     @gro.command(name="a")
     @commands.guild_only()
     @commands.has_permissions(manage_roles=True)
-    async def add_role(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], color: str = "blue"):
-        """新增身分組按鈕到現有的領取面板 (.gro a @身分組1 [@身分組2 ...] [顏色])"""
+    async def add_role(self, ctx: commands.Context, roles: commands.Greedy[discord.Role], *, options: str = "blue"):
+        """新增身分組按鈕到現有的領取面板
+        
+        用法：.gro a @身分組1 [@身分組2 ...] [顏色]
+             .gro a @身分組1 --req @前置身份組 [顏色]
+        
+        使用 --req @身份組 可限制只有擁有指定身份組的人才能領取。
+        """
         await ctx.message.delete()
 
         if not roles:
             return await ctx.send(
-                "❌ 請提供至少一個要新增的有效身分組！\n💡 使用格式：`.gro a @身分組1 [@身分組2 ...] [顏色]`",
+                "❌ 請提供至少一個要新增的有效身分組！\n💡 使用格式：`.gro a @身分組1 [@身分組2 ...] [顏色]`\n💡 限制資格：加入 `--req @前置身份組` 可設定前置身份組要求",
                 delete_after=7
             )
 
@@ -94,12 +150,24 @@ class RoleClaim(commands.Cog):
             if ctx.guild.me.top_role <= r:
                 return await ctx.send(f"❌ 機器人最高身分組階級必須高於 {r.name} 才能建立領取按鈕！", delete_after=5)
 
-        color_lower = color.lower()
+        # --- 解析 --req 參數 ---
+        required_role: discord.Role = None
+        remaining = options or "blue"
+
+        if "--req" in remaining:
+            req_parts = remaining.split("--req", 1)
+            remaining = req_parts[0].strip() or "blue"
+            req_str = req_parts[1].strip()
+            req_id_str = req_str.split()[0] if req_str else ""
+            req_id_str = req_id_str.strip("<@&>")
+            if req_id_str.isdigit():
+                required_role = ctx.guild.get_role(int(req_id_str))
+                if not required_role:
+                    return await ctx.send("❌ 找不到 `--req` 所指定的身份組，請確認是否正確！", delete_after=5)
+
+        color_lower = remaining.strip().lower()
         if color_lower not in STYLE_MAP:
-            return await ctx.send(
-                "❌ 無效的顏色！可用的顏色為：`blue` (藍色), `grey` (灰色), `green` (綠色), `red` (紅色)。",
-                delete_after=5
-            )
+            color_lower = "blue"
         style = STYLE_MAP[color_lower]
 
         # 尋找最近的領取面板訊息
@@ -125,12 +193,13 @@ class RoleClaim(commands.Cog):
         existing_role_ids = []
         view = discord.ui.View(timeout=None)
 
-        # 重新建立現有的按鈕
+        # 重新建立現有的按鈕（保留原 custom_id，維持舊的前置身份組設定）
         for row in found_msg.components:
             for item in row.children:
                 if item.custom_id and item.custom_id.startswith("claim_role_"):
-                    r_id = int(item.custom_id.replace("claim_role_", ""))
-                    existing_role_ids.append(r_id)
+                    r_id, _ = parse_custom_id(item.custom_id)
+                    if r_id:
+                        existing_role_ids.append(r_id)
                     btn = discord.ui.Button(
                         style=item.style,
                         label=item.label,
@@ -146,11 +215,11 @@ class RoleClaim(commands.Cog):
             if len(view.children) >= 25:
                 await ctx.send("❌ 該訊息的領取按鈕已達上限（25 個），部分身分組未加入！", delete_after=5)
                 break
-                
+
             new_btn = discord.ui.Button(
                 style=style,
                 label=r.name,
-                custom_id=f"claim_role_{r.id}",
+                custom_id=build_custom_id(r.id, required_role.id if required_role else None),
                 emoji="🏷️"
             )
             view.add_item(new_btn)
@@ -165,11 +234,18 @@ class RoleClaim(commands.Cog):
         for r in new_added_roles:
             if f"• {r.mention}" not in desc:
                 desc += f"\n• {r.mention}"
+
+        # 若有前置身份組要求，在說明中追加提示
+        if required_role:
+            req_note = f"🔒 **需要擁有 {required_role.mention} 才能領取**"
+            if req_note not in desc:
+                desc = req_note + "\n" + desc
         embed.description = desc
 
         await found_msg.edit(embed=embed, view=view)
         added_names = ", ".join([r.name for r in new_added_roles])
-        await ctx.send(f"✅ 已成功新增身分組：{added_names} 至領取列表！", delete_after=5)
+        req_info = f"（需要身份組：{required_role.name}）" if required_role else ""
+        await ctx.send(f"✅ 已成功新增身分組：{added_names} 至領取列表！{req_info}", delete_after=5)
 
     @gro.command(name="c", aliases=["color", "style"])
     @commands.guild_only()
@@ -221,8 +297,8 @@ class RoleClaim(commands.Cog):
         for row in found_msg.components:
             for item in row.children:
                 if item.custom_id and item.custom_id.startswith("claim_role_"):
-                    r_id = int(item.custom_id.replace("claim_role_", ""))
-                    
+                    r_id, _ = parse_custom_id(item.custom_id)
+
                     if r_id in target_ids:
                         btn_style = style
                         updated_count += 1
@@ -251,36 +327,49 @@ class RoleClaim(commands.Cog):
         custom_id = interaction.data.get("custom_id", "")
         if not custom_id.startswith("claim_role_"):
             return
-            
+
         # 1. 確保只有運行中的節點回應
         if not getattr(self.bot, "is_active_node", True):
             return
-            
-        role_id_str = custom_id.replace("claim_role_", "")
-        if not role_id_str.isdigit():
+
+        role_id, required_role_id = parse_custom_id(custom_id)
+        if role_id is None:
             return
-            
-        role_id = int(role_id_str)
+
         guild = interaction.guild
         if not guild:
             return
-            
+
         role = guild.get_role(role_id)
         if not role:
             return await interaction.response.send_message("❌ 找不到該身分組，可能已被刪除。", ephemeral=True)
-            
+
         member = interaction.user
         if not isinstance(member, discord.Member):
             return
-            
-        # 2. 檢查機器人的最高身分組是否比目標身分組高，否則無法操作
+
+        # 2. 檢查前置身份組資格
+        if required_role_id:
+            required_role = guild.get_role(required_role_id)
+            if not required_role:
+                return await interaction.response.send_message(
+                    "❌ 前置身份組不存在，可能已被刪除，請聯絡管理員。",
+                    ephemeral=True
+                )
+            if required_role not in member.roles:
+                return await interaction.response.send_message(
+                    f"❌ 你沒有資格領取此身分組！\n🔒 需要擁有 **{required_role.name}** 身份組才能領取。",
+                    ephemeral=True
+                )
+
+        # 3. 檢查機器人的最高身分組是否比目標身分組高，否則無法操作
         if guild.me.top_role <= role:
             return await interaction.response.send_message(
-                "❌ 權限不足：機器人的最高身分組必須高於該身分組才能進行操作，請聯絡管理員調整身分組順序。", 
+                "❌ 權限不足：機器人的最高身分組必須高於該身分組才能進行操作，請聯絡管理員調整身分組順序。",
                 ephemeral=True
             )
-            
-        # 3. 領取 / 移除身分組
+
+        # 4. 領取 / 移除身分組
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="自訂身分組領取系統：取消領取")
