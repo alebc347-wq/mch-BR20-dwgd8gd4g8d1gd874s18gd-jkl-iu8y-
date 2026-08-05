@@ -1773,5 +1773,47 @@ class GuildExam(commands.Cog):
         await interaction.followup.send("✅ 業績已手動結算並發送成功，已重設當月考官語音累計秒數！", ephemeral=True)
 
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 監聽身分組變動：自動同步核心成員名單
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """當成員獲得 ROLE_APPLICANT 身分組時，自動加入核心成員資料庫並更新名單"""
+        if after.guild.id != TARGET_GUILD_ID:
+            return
+
+        # 找出新增的身分組
+        before_role_ids = {r.id for r in before.roles}
+        after_role_ids = {r.id for r in after.roles}
+        added_roles = after_role_ids - before_role_ids
+
+        if ROLE_APPLICANT not in added_roles:
+            return
+
+        db = self.bot.db.db
+
+        # 若名單中已有此成員則跳過（INSERT OR IGNORE 保證不重複）
+        async with db.execute(
+            "SELECT 1 FROM guild_core_members WHERE user_id = ?",
+            (after.id,)
+        ) as cursor:
+            existing = await cursor.fetchone()
+
+        if existing:
+            # 已在名單中，不重複新增，但仍確保名單是最新的
+            return
+
+        # 寫入資料庫
+        await db.execute(
+            "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+            (after.id, "")
+        )
+        await db.commit()
+
+        # 更新戰隊名單（固定頻道 1472873824914772121）
+        await self.update_member_list(after.guild)
+        print(f"✅ [on_member_update] {after.display_name} ({after.id}) 已自動加入核心成員名單")
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(GuildExam(bot))
