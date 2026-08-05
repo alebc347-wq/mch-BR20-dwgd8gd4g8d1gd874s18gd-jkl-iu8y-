@@ -404,9 +404,7 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
     # 指令
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    giveaway_group = app_commands.Group(name="giveaway", description="抽獎系統")
-
-    @giveaway_group.command(name="start", description="開始抽獎")
+    @app_commands.command(name="start", description="開始抽獎")
     @app_commands.describe(
         prize="獎品名稱",
         duration="持續時間 (例: 1h, 1d, 30min)",
@@ -471,7 +469,7 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
         view = GiveawayJoinButton(giveaway_id)
         await message.edit(view=view)
 
-    @giveaway_group.command(name="schedule", description="排程抽獎（設定未來開始時間，倒數後自動開始）")
+    @app_commands.command(name="schedule", description="排程抽獎（設定未來開始時間，倒數後自動開始）")
     @app_commands.describe(
         prize="獎品名稱",
         start_at="開始時間，格式：2026/8/5 pm 7:00（台灣時間）",
@@ -552,7 +550,7 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
             blocked_role_id=blocked_role.id if blocked_role else None,
         )
 
-    @giveaway_group.command(name="end", description="手動結束抽獎")
+    @app_commands.command(name="end", description="手動結束抽獎")
     @app_commands.describe(giveaway_id="抽獎 ID")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -575,7 +573,7 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
         await self._end_giveaway(giveaway)
         await interaction.followup.send(embed=EmbedFactory.success("抽獎已結束", f"抽獎 #{giveaway_id} 已手動結束。"))
 
-    @giveaway_group.command(name="reroll", description="重新抽獎")
+    @app_commands.command(name="reroll", description="重新抽獎")
     @app_commands.describe(giveaway_id="抽獎 ID")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -617,7 +615,7 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
                 embed=EmbedFactory.error("找不到有效的中獎者"),
             )
 
-    @giveaway_group.command(name="list", description="列出進行中的抽獎")
+    @app_commands.command(name="list", description="列出進行中的抽獎")
     async def giveaway_list(self, interaction: discord.Interaction):
         active = await self.db.get_active_giveaways(interaction.guild.id)
 
