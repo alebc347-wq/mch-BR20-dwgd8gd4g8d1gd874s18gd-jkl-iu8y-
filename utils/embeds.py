@@ -485,10 +485,13 @@ class EmbedFactory:
         )
 
     @classmethod
-    def giveaway(cls, prize: str, host: discord.Member, duration: str = "", winners: int = 1, entries: int = 0) -> discord.Embed:
+    def giveaway(cls, prize: str, host: discord.Member, duration: str = "", winners: int = 1, entries: int = 0, role_hint: str = "") -> discord.Embed:
+        desc = f"**{Emoji.GIFT} 獎品：{prize}**"
+        if role_hint:
+            desc += f"\n{role_hint}"
         embed = cls._base_embed(
             title=f"{Emoji.PARTY} 抽獎活動",
-            description=f"**{Emoji.GIFT} 獎品：{prize}**",
+            description=desc,
             color=Colors.GIVEAWAY,
             badge_url=BadgeImages.GIVEAWAY,
         )
@@ -503,6 +506,7 @@ class EmbedFactory:
             inline=False,
         )
         return embed
+
 
     @classmethod
     def giveaway_ended(cls, prize: str, winners: list[discord.Member], entries: int = 0) -> discord.Embed:

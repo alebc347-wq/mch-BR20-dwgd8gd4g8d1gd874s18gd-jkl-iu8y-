@@ -32,7 +32,15 @@ class Database:
         except Exception as e:
             print(f"⚠️ PRAGMA 設定調整失敗: {e}")
         await self._create_tables()
-        
+
+        # 自動遷移：為舊版 giveaways 表補上 required_role_id / blocked_role_id 欄位
+        for col in ("required_role_id", "blocked_role_id"):
+            try:
+                await self.db.execute(f"ALTER TABLE giveaways ADD COLUMN {col} INTEGER DEFAULT NULL")
+                await self.db.commit()
+            except Exception:
+                pass  # 欄位已存在，忽略
+
         # 自動遷移舊的 YouTube Channel ID 預設值為 @CalebYT-t1g
         try:
             async with self.db.execute(
@@ -95,6 +103,25 @@ class Database:
                 entries TEXT DEFAULT '[]',
                 ends_at TEXT NOT NULL,
                 ended INTEGER DEFAULT 0,
+                required_role_id INTEGER DEFAULT NULL,
+                blocked_role_id INTEGER DEFAULT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            -- 排程抽獎（倒數預告）
+            CREATE TABLE IF NOT EXISTS scheduled_giveaways (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                host_id INTEGER NOT NULL,
+                prize TEXT NOT NULL,
+                winners_count INTEGER DEFAULT 1,
+                duration_seconds INTEGER NOT NULL,
+                starts_at TEXT NOT NULL,
+                required_role_id INTEGER DEFAULT NULL,
+                blocked_role_id INTEGER DEFAULT NULL,
+                launched INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -428,12 +455,12 @@ class Database:
     # 抽獎系統
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    async def create_giveaway(self, guild_id: int, channel_id: int, message_id: int, host_id: int, prize: str, winners_count: int, ends_at: str) -> int:
+    async def create_giveaway(self, guild_id: int, channel_id: int, message_id: int, host_id: int, prize: str, winners_count: int, ends_at: str, required_role_id: int = None, blocked_role_id: int = None) -> int:
         """建立抽獎，回傳 ID"""
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.db.execute(
-            "INSERT INTO giveaways (guild_id, channel_id, message_id, host_id, prize, winners_count, ends_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, channel_id, message_id, host_id, prize, winners_count, ends_at, now),
+            "INSERT INTO giveaways (guild_id, channel_id, message_id, host_id, prize, winners_count, ends_at, required_role_id, blocked_role_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, message_id, host_id, prize, winners_count, ends_at, required_role_id, blocked_role_id, now),
         )
         await self.db.commit()
         return cursor.lastrowid
@@ -487,6 +514,34 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 排程抽獎系統
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def create_scheduled_giveaway(self, guild_id: int, channel_id: int, message_id: int, host_id: int, prize: str, winners_count: int, duration_seconds: int, starts_at: str, required_role_id: int = None, blocked_role_id: int = None) -> int:
+        """建立排程抽獎（倒數預告），回傳 ID"""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            "INSERT INTO scheduled_giveaways (guild_id, channel_id, message_id, host_id, prize, winners_count, duration_seconds, starts_at, required_role_id, blocked_role_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, message_id, host_id, prize, winners_count, duration_seconds, starts_at, required_role_id, blocked_role_id, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def get_pending_scheduled_giveaways(self) -> list:
+        """取得所有尚未啟動的排程抽獎"""
+        async with self.db.execute(
+            "SELECT * FROM scheduled_giveaways WHERE launched = 0"
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def launch_scheduled_giveaway(self, scheduled_id: int) -> None:
+        """標記排程抽獎已啟動"""
+        await self.db.execute(
+            "UPDATE scheduled_giveaways SET launched = 1 WHERE id = ?", (scheduled_id,)
+        )
+        await self.db.commit()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 反刷屏
