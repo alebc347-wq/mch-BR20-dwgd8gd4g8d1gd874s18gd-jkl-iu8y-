@@ -27,10 +27,10 @@ class LogSettingsSelect(discord.ui.Select):
             discord.SelectOption(label="訊息編輯 (Message Edit)", value="message_edit", description="記錄訊息內容修改事件"),
             discord.SelectOption(label="角色變更 (Role Change)", value="role_change", description="記錄成員身分組角色變動"),
             discord.SelectOption(label="語音動態 (Voice Activity)", value="voice", description="記錄加入/離開/切換語音頻道"),
-            discord.SelectOption(label="正在輸入 (Is Typing)", value="typing", description="記錄成員正在打字（洗版級）"),
-            discord.SelectOption(label="新訊息 (New Message)", value="new_message", description="記錄所有發送的新訊息（洗版級）"),
+            discord.SelectOption(label="正在輸入 (Is Typing) 💎Pro", value="typing", description="💎 Pro 專屬 — 記錄成員正在打字（洗版級）"),
+            discord.SelectOption(label="新訊息 (New Message) 💎Pro", value="new_message", description="💎 Pro 專屬 — 記錄所有發送的新訊息（洗版級）"),
             discord.SelectOption(label="頻道變更 (Channel Change)", value="channel_change", description="記錄頻道的建立與刪除"),
-            discord.SelectOption(label="狀態改變 (Status Change)", value="status_change", description="記錄成員的線上狀態與活動/自訂狀態變更"),
+            discord.SelectOption(label="狀態改變 (Status Change) 💎Pro", value="status_change", description="💎 Pro 專屬 — 記錄成員的線上狀態與活動/自訂狀態變更"),
             discord.SelectOption(label="指令使用 (Command Use)", value="command_use", description="記錄成員使用機器人的指令與參數"),
             discord.SelectOption(label="音效板使用 (Soundboard Use)", value="soundboard", description="記錄成員在語音頻道中使用音效板播放音效"),
             discord.SelectOption(label="系統重啟資訊 (Restart Info)", value="restart_notifications", description="記錄 Bot 的重啟、更新與準備就緒狀態")
@@ -48,10 +48,15 @@ class LogSettingsSelect(discord.ui.Select):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("❌ 您需要「管理伺服器」權限才能變更此設定！", ephemeral=True)
             
-        if not await self.db.is_guild_pro(self.guild_id):
-            return await interaction.response.send_message("❌ 此伺服器尚未訂閱 Pro/Ultra 權限！", ephemeral=True)
-
-        selected = self.values
+        is_pro = await self.db.is_guild_pro(self.guild_id)
+        selected = list(self.values)
+        
+        pro_only_events = {"typing", "new_message", "status_change"}
+        has_pro_selected = any(val in pro_only_events for val in selected)
+        
+        # 若非 Pro 伺服器，過濾掉 Pro 專屬高頻事件
+        if not is_pro:
+            selected = [val for val in selected if val not in pro_only_events]
         
         # 處理系統重啟資訊 (restart_notifications)
         restart_enabled = "restart_notifications" in selected
@@ -68,15 +73,15 @@ class LogSettingsSelect(discord.ui.Select):
             "message_edit": "訊息編輯",
             "role_change": "角色變更",
             "voice": "語音動態",
-            "typing": "正在輸入",
-            "new_message": "新訊息",
+            "typing": "正在輸入 💎Pro",
+            "new_message": "新訊息 💎Pro",
             "channel_change": "頻道變更",
-            "status_change": "狀態改變",
+            "status_change": "狀態改變 💎Pro",
             "command_use": "指令使用",
             "soundboard": "音效板使用",
         }
         
-        enabled_list = [event_names_zh[e] for e in log_events]
+        enabled_list = [event_names_zh.get(e, e) for e in log_events]
         if restart_enabled:
             enabled_list.append("系統重啟資訊")
 
@@ -87,6 +92,12 @@ class LogSettingsSelect(discord.ui.Select):
             description=f"此伺服器已成功更新日誌接收項目！\n\n**目前已啟用通知：**\n{status_desc}",
             color=discord.Color.green()
         )
+        if not is_pro and has_pro_selected:
+            embed.add_field(
+                name="💎 專業版功能提示",
+                value="您勾選的部分高頻日誌（新訊息記錄、打字中、狀態變更）為 **Pro / Ultra 專屬功能**，目前已為您保存基礎日誌項目。如需啟用高頻日誌請升級至 Pro！",
+                inline=False
+            )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -146,17 +157,6 @@ class LogConfigButton(discord.ui.View):
             return await interaction.response.send_message("❌ 您需要「管理伺服器」權限才能變更此設定！", ephemeral=True)
             
         db = interaction.client.db
-        if not await db.is_guild_pro(interaction.guild_id):
-            embed = discord.Embed(
-                title="⭐ 升級為 Pro 或 Ultra",
-                description=(
-                    "❌ **功能受限**\n「**日誌訊息自定義功能**」僅限 **Pro** 或 **Ultra** 訂閱伺服器使用！\n"
-                    "請聯絡機器人擁有者以啟用此伺服器的 Pro/Ultra 權限。"
-                ),
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
         view = LogSettingsView(interaction.guild_id, db)
         await view.load_defaults()
         await interaction.response.send_message("⚙️ **日誌系統自定義選單**\n請在下方下拉選單中**選擇/勾選**您想要啟用的日誌通知類型：", view=view, ephemeral=True)
@@ -286,9 +286,11 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
 
     async def _should_log(self, guild_id: int, event: str) -> bool:
         """檢查是否應該記錄此事件"""
-        # 如果未啟用 Pro 或 Ultra 權限，則不能使用日誌系統
-        if not await self.db.is_guild_pro(guild_id):
-            return False
+        # 高頻/洗版級進階日誌僅限 Pro 或 Ultra 伺服器
+        PRO_ONLY_EVENTS = {"typing", "new_message", "status_change"}
+        if event in PRO_ONLY_EVENTS:
+            if not await self.db.is_guild_pro(guild_id):
+                return False
             
         settings = await self.db.get_guild_settings(guild_id)
         log_events_str = settings.get("log_events")
@@ -371,6 +373,15 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
                     ephemeral=True,
                 )
         
+        is_pro = await self.db.is_guild_pro(interaction.guild_id)
+        pro_only_events = {"typing", "new_message", "status_change"}
+        pro_warning = ""
+        if not is_pro:
+            filtered = [e for e in event_list if e not in pro_only_events]
+            if len(filtered) != len(event_list) and "all" not in event_list:
+                pro_warning = "\n⚠️ 其中高頻進階日誌（typing, new_message, status_change）為 Pro/Ultra 專屬功能，已為您保存其餘基礎事件。"
+                event_list = filtered
+        
         await self.db.update_guild_setting(
             interaction.guild.id, "log_events", json.dumps(event_list)
         )
@@ -378,7 +389,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         await interaction.response.send_message(
             embed=EmbedFactory.success(
                 "日誌配置已更新",
-                f"記錄事件：`{'`, `'.join(event_list)}`",
+                f"記錄事件：`{'`, `'.join(event_list)}`{pro_warning}",
             )
         )
 
@@ -386,19 +397,7 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def logsettings(self, interaction: discord.Interaction):
-        # 1. 驗證權限與 Pro/Ultra
-        if not await self.db.is_guild_pro(interaction.guild_id):
-            embed = discord.Embed(
-                title="⭐ 升級為 Pro 或 Ultra",
-                description=(
-                    "❌ **功能受限**\n「**日誌訊息自定義功能**」僅限 **Pro** 或 **Ultra** 訂閱伺服器使用！\n"
-                    "請聯絡機器人擁有者以啟用此伺服器的 Pro/Ultra 權限。"
-                ),
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        # 2. 顯示自定義選單 (ephemeral)
+        # 顯示自定義選單 (ephemeral)
         view = LogSettingsView(interaction.guild_id, self.db)
         await view.load_defaults()
         await interaction.response.send_message(
@@ -726,8 +725,8 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
                             embed = discord.Embed(
                                 title="⭐ 升級為 Pro 或 Ultra",
                                 description=(
-                                    "💡 **系統提示**：此伺服器目前使用免費版日誌系統。\n"
-                                    "訂閱 **Pro** 或 **Ultra** 即可解鎖「**日誌訊息自定義功能**」，客製化各類日誌的發送，保持頻道整潔！"
+                                    "💡 **系統提示**：此伺服器目前使用免費標準版日誌系統。\n"
+                                    "訂閱 **Pro** 或 **Ultra** 即可解鎖進階高頻日誌（新訊息即時記錄、打字中動態、成員狀態變更）！"
                                 ),
                                 color=Colors.WARNING
                             )

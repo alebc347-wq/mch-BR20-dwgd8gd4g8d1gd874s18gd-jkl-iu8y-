@@ -100,30 +100,38 @@ class ExamRegisterModal(discord.ui.Modal):
         db = self.bot.db.db
         guild = interaction.guild
 
-        # 檢查等級是否達到 200 等以上 (免試直過政策)
+        # 檢查等級是否達到 400 等以上 (免試且免審核政策)
         import re
         level_str = self.level.value
         nums = re.findall(r'\d+', level_str)
         level_val = int(nums[0]) if nums else 0
 
-        if level_val >= 200:
-            # 200等以上改為審核制：發送審核按鈕給最高權限者 (BYPASS_USER_ID 1437408048934027274)
-            audit_embed = discord.Embed(
-                title="🎯 收到 200 等以上免試審核申請",
-                description="有考生提交了 200 等以上的報名資料，請最高管理員點擊下方按鈕進行審核：",
-                color=discord.Color.gold()
+        if level_val >= 400:
+            student = interaction.user
+            # 1. 賦予已通過身分組 (ROLE_APPLICANT: 1478335180069671044)
+            role = guild.get_role(ROLE_APPLICANT)
+            if not role:
+                role = discord.utils.get(guild.roles, id=ROLE_APPLICANT)
+            if role and student:
+                try:
+                    if role not in student.roles:
+                        await student.add_roles(role)
+                except Exception as e:
+                    print(f"⚠️ 賦予通過身分組失敗: {e}")
+
+            # 2. 新增至戰隊核心成員資料庫
+            await db.execute(
+                "INSERT OR IGNORE INTO guild_core_members (user_id, note) VALUES (?, ?)",
+                (student.id, "")
             )
-            audit_embed.add_field(name="考生", value=interaction.user.mention, inline=True)
-            audit_embed.add_field(name="遊戲等級", value=f"`{self.level.value}`", inline=True)
-            audit_embed.add_field(name="勝率", value=f"`{self.win_rate.value}`", inline=True)
-            audit_embed.add_field(name="牌位", value=f"`{self.rank.value}`", inline=True)
-            audit_embed.set_footer(text=f"考生 ID: {interaction.user.id}")
+            await db.commit()
 
-            view = Exam200AuditView(self.bot, interaction.user.id)
+            # 3. 更新戰隊名單
+            cog = self.bot.get_cog("GuildExam")
+            if cog:
+                await cog.update_member_list(guild)
 
-            bypass_member = guild.get_member(BYPASS_USER_ID)
-            ping_str = bypass_member.mention if bypass_member else f"<@{BYPASS_USER_ID}>"
-
+            # 4. 發送通報至面板頻道
             target_chan = interaction.channel
             async with db.execute("SELECT panel_channel_id FROM guild_exam_settings WHERE guild_id = ?", (guild.id,)) as cursor:
                 r = await cursor.fetchone()
@@ -133,13 +141,21 @@ class ExamRegisterModal(discord.ui.Modal):
                         target_chan = c
 
             try:
-                await target_chan.send(content=f"🔔 {ping_str} 收到新的 200 等免試審核申請！", embed=audit_embed, view=view)
+                pass_embed = discord.Embed(
+                    title="🎉 400 等以上免試自動通過",
+                    description=f"考生 {student.mention} 登記等級為 **{level_val} 等**（達 400 等以上免試且免審核門檻），已自動核准通過並加入戰隊成員名單！",
+                    color=discord.Color.green()
+                )
+                pass_embed.add_field(name="遊戲等級", value=f"`{self.level.value}`", inline=True)
+                pass_embed.add_field(name="勝率", value=f"`{self.win_rate.value}`", inline=True)
+                pass_embed.add_field(name="牌位", value=f"`{self.rank.value}`", inline=True)
+                await target_chan.send(embed=pass_embed)
             except Exception:
-                await interaction.channel.send(content=f"🔔 {ping_str} 收到新的 200 等免試審核申請！", embed=audit_embed, view=view)
+                pass
 
             return await interaction.followup.send(
-                f"📝 **報名資料已送出！**\n"
-                f"檢測到您的等級已達 **{level_val} 等**，系統已將您的免試申請送交最高管理員 ({ping_str}) 進行審核。審核同意後將自動發放 <@&{ROLE_APPLICANT}> 身分組並加入戰隊成員名單！",
+                f"🎉 **恭喜！免試直過！**\n"
+                f"檢測到您的等級已達 **{level_val} 等**（400 等以上免試且免審核），系統已自動為您賦予 <@&{ROLE_APPLICANT}> 身分組並將您加入戰隊成員名單！",
                 ephemeral=True
             )
 
