@@ -147,20 +147,33 @@ class AutoUpdate(commands.Cog):
         await ctx.send(embed=embed)
 
     async def run_cleanup(self) -> str:
-        """更新前自動清理磁碟空間：刪除 __pycache__、data/ 暫存媒體、SQLite VACUUM"""
+        """更新前自動清理磁碟空間：刪除 __pycache__、暫存 JSON/TXT、data/ 媒體、SQLite VACUUM"""
+        import shutil
         freed = 0
-        report = []
 
-        # 1. 刪除所有 __pycache__
-        for root, dirs, files in os.walk("."):
+        # 1. 刪除所有 __pycache__ 目錄與殘留 .pyc/.pyo 檔案
+        for root, dirs, files in os.walk(".", topdown=False):
+            # 跳過 .git 目錄
+            dirs[:] = [d for d in dirs if d != ".git"]
             for d in dirs:
                 if d == "__pycache__":
-                    import shutil
                     full = os.path.join(root, d)
                     try:
-                        size = sum(os.path.getsize(os.path.join(full, f)) for f in os.listdir(full) if os.path.isfile(os.path.join(full, f)))
-                        shutil.rmtree(full)
+                        size = sum(
+                            os.path.getsize(os.path.join(full, f))
+                            for f in os.listdir(full)
+                            if os.path.isfile(os.path.join(full, f))
+                        )
+                        shutil.rmtree(full, ignore_errors=True)
                         freed += size
+                    except Exception:
+                        pass
+            for fname in files:
+                if fname.endswith((".pyc", ".pyo")):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        freed += os.path.getsize(fpath)
+                        os.remove(fpath)
                     except Exception:
                         pass
 
@@ -172,21 +185,57 @@ class AutoUpdate(commands.Cog):
                 fpath = os.path.join(data_dir, fname)
                 if os.path.isfile(fpath) and os.path.splitext(fname)[1].lower() in temp_exts:
                     try:
-                        size = os.path.getsize(fpath)
+                        freed += os.path.getsize(fpath)
                         os.remove(fpath)
-                        freed += size
                     except Exception:
                         pass
 
-        # 3. SQLite VACUUM
+        # 3. 刪除根目錄的暫存 scratch 大型檔案
+        scratch_patterns = [
+            "scratch_header.json", "scratch_results.json",
+            "scratch_voices.txt", "invidious_results.json",
+            "patch_fix.txt",
+        ]
+        for fname in scratch_patterns:
+            if os.path.isfile(fname):
+                try:
+                    freed += os.path.getsize(fname)
+                    os.remove(fname)
+                except Exception:
+                    pass
+
+        # 4. 刪除根目錄非 assets 的大型 PNG/JPG（例如 ChatGPT 截圖）
+        img_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        for fname in os.listdir("."):
+            if os.path.isfile(fname) and os.path.splitext(fname)[1].lower() in img_exts:
+                try:
+                    freed += os.path.getsize(fname)
+                    os.remove(fname)
+                except Exception:
+                    pass
+
+        # 5. 刪除 scratch/ 暫存腳本目錄（若存在）
+        if os.path.isdir("scratch"):
+            try:
+                freed += sum(
+                    os.path.getsize(os.path.join(r, f))
+                    for r, _, fs in os.walk("scratch") for f in fs
+                )
+                shutil.rmtree("scratch", ignore_errors=True)
+            except Exception:
+                pass
+
+        # 6. SQLite VACUUM 壓縮資料庫
         try:
             db = self.bot.db.db
             await db.execute("VACUUM;")
         except Exception:
             pass
 
-        report.append(f"🧹 預清理完成！已釋放約 **{freed // 1024} KB** 磁碟空間。")
-        return "\n".join(report)
+        freed_kb = freed // 1024
+        freed_mb = freed_kb / 1024
+        size_str = f"{freed_mb:.1f} MB" if freed_mb >= 1 else f"{freed_kb} KB"
+        return f"🧹 預清理完成！已釋放約 **{size_str}** 磁碟空間。"
 
     async def run_update_process(self, update_status_func) -> bool:
         """核心更新與重啟流程：先清理磁碟 → git pull → (Zip 備援)"""
@@ -246,6 +295,9 @@ class AutoUpdate(commands.Cog):
                             return False
                         zip_data = await response.read()
 
+                # Zip 解壓縮前再清理一次，確保空間充足
+                await update_status_func("🧹 再次清理磁碟以確保解壓空間充足...")
+                await self.run_cleanup()
                 await update_status_func("📦 Zip 下載完成，正在解壓縮並覆蓋程式碼...")
 
                 with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
