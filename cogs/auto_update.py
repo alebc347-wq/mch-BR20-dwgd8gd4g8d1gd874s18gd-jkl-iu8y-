@@ -329,9 +329,17 @@ class AutoUpdate(commands.Cog):
                 await update_status_func("✅ Zip 解壓覆蓋成功！")
             except OSError as e:
                 if getattr(e, 'errno', None) == 28 or "No space left" in str(e):
+                    server_id = os.getenv("SERVER_ID", "未知")
+                    # 根據 SERVER_ID 判斷機器名稱
+                    server_name_map = {
+                        "wispbyte-1": "**1 號機 (wispbyte-1)**",
+                        "wispbyte-2": "**2 號機 (wispbyte-2)**",
+                    }
+                    server_label = server_name_map.get(server_id, f"**{server_id}**")
                     await update_status_func(
-                        "❌ **磁碟空間不足 ([Errno 28] No space left on device)**\n\n"
-                        "預清理後仍然空間不足，請至 **Wispbyte 控制台** 手動刪除容器內以下目錄：\n"
+                        f"❌ **磁碟空間不足 ([Errno 28] No space left on device)**\n"
+                        f"🖥️ **發生機器：{server_label}**\n\n"
+                        f"預清理後仍然空間不足，請至 **Wispbyte 控制台** 找到 {server_label} 的容器，手動刪除以下目錄：\n"
                         "• `/home/container/__pycache__/`\n"
                         "• `/home/container/cogs/__pycache__/`\n"
                         "• `/home/container/utils/__pycache__/`\n"
