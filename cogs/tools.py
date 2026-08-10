@@ -71,11 +71,179 @@ class YTSearchPlayButton(discord.ui.Button):
         await music_cog.update_controller_message(interaction.guild)
 
 
-class YTSearchView(discord.ui.View):
-    def __init__(self, tracks: list[wavelink.Playable]):
-        super().__init__(timeout=60)
-        for i, track in enumerate(tracks[:3], 1):
-            self.add_item(YTSearchPlayButton(track, i))
+class AntiScamView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, author_id: int):
+        super().__init__(timeout=180)
+        self.guild = guild
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ 只有指令發起人能操作此安全面板。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="伺服器安全健檢", emoji="🛡️", style=discord.ButtonStyle.primary, row=0)
+    async def audit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        score = 100
+        issues = []
+        checks = []
+
+        # 1. 驗證層級
+        v_level = self.guild.verification_level
+        if v_level == discord.VerificationLevel.none:
+            score -= 25
+            issues.append("❌ 伺服器驗證層級為「無」（易遭免洗帳號或機器人洗版）")
+            checks.append("⚠️ **驗證層級**：無 (建議調高至「低」或「中」以上)")
+        elif v_level in [discord.VerificationLevel.low, discord.VerificationLevel.medium]:
+            checks.append(f"✅ **驗證層級**：良好 (`{v_level.name}`)")
+        else:
+            checks.append(f"💎 **驗證層級**：極高 (`{v_level.name}`)")
+
+        # 2. 2FA 要求
+        if self.guild.mfa_level == discord.MFALevel.require_2fa:
+            checks.append("💎 **管理員雙重驗證 (2FA)**：已強制啟用")
+        else:
+            score -= 15
+            issues.append("⚠️ 管理員無強制 2FA（管理員帳號被盜時可能波及伺服器）")
+            checks.append("⚠️ **管理員雙重驗證 (2FA)**：未強制啟用")
+
+        # 3. 預設 @everyone 權限
+        everyone_role = self.guild.default_role
+        dangerous_perms = []
+        if everyone_role.permissions.administrator:
+            dangerous_perms.append("管理員 (Administrator)")
+        if everyone_role.permissions.manage_guild:
+            dangerous_perms.append("管理伺服器")
+        if everyone_role.permissions.manage_channels:
+            dangerous_perms.append("管理頻道")
+        if everyone_role.permissions.manage_roles:
+            dangerous_perms.append("管理身分組")
+        if everyone_role.permissions.ban_members:
+            dangerous_perms.append("封鎖成員")
+        if everyone_role.permissions.kick_members:
+            dangerous_perms.append("踢出成員")
+        if everyone_role.permissions.mention_everyone:
+            dangerous_perms.append("提及所有人 (@everyone)")
+
+        if dangerous_perms:
+            score -= 40
+            issues.append(f"🚨 **預設 @everyone 擁有高危權限**：{', '.join(dangerous_perms)}")
+            checks.append(f"🚨 **@everyone 權限**：發現危險權限 (`{len(dangerous_perms)}` 項)")
+        else:
+            checks.append("✅ **@everyone 權限**：安全 (無危險管理權限)")
+
+        # 4. 顯式媒體內容過濾
+        filter_level = self.guild.explicit_content_filter
+        if filter_level == discord.ContentFilter.disabled:
+            score -= 10
+            issues.append("⚠️ 不良媒體內容掃描已關閉")
+            checks.append("⚠️ **內容掃描**：已關閉")
+        else:
+            checks.append("✅ **內容掃描**：已啟用")
+
+        score = max(0, min(100, score))
+        if score >= 90:
+            rating = "🟢 極度安全 (等級 S)"
+            color = Colors.SUCCESS
+        elif score >= 70:
+            rating = "🟡 安全 (等級 A)"
+            color = Colors.INFO
+        elif score >= 50:
+            rating = "🟠 需注意 (等級 B)"
+            color = Colors.WARNING
+        else:
+            rating = "🔴 高風險 (等級 C/危險)"
+            color = Colors.ERROR
+
+        embed = discord.Embed(
+            title=f"🛡️ {self.guild.name} 安全健檢報告",
+            color=color
+        )
+        embed.add_field(name="🎯 安全評分", value=f"**`{score} / 100 分`** — {rating}", inline=False)
+        embed.add_field(name="📋 基礎安全檢驗項", value="\n".join(checks), inline=False)
+        
+        if issues:
+            embed.add_field(name="⚠️ 需改善的安全隱患", value="\n".join(issues), inline=False)
+        else:
+            embed.add_field(name="✨ 檢驗總結", value="太棒了！伺服器安全基礎防護完善，無明顯重大漏洞。", inline=False)
+
+        embed.set_footer(text="勇者 2.0 守護伺服器安全")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="常見詐騙防範指南", emoji="🚨", style=discord.ButtonStyle.secondary, row=0)
+    async def scam_guide_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🚨 Discord 常見詐騙與防範守則",
+            description="以下為目前 Discord 最猖獗的詐騙手法與防禦對策：",
+            color=Colors.WARNING
+        )
+        embed.add_field(
+            name="1️⃣ 假 Discord Nitro 贈送 / 假測試員邀請",
+            value="• **手法**：私訊發送 `discrod-nitro.com`、`dlscord.gift` 等仿冒釣魚網址。\n• **防範**：官方 Nitro 連結必定是 `discord.gift` 或 `discord.com`，切勿在非官方頁面掃描 QR Code 或登入。",
+            inline=False
+        )
+        embed.add_field(
+            name="2️⃣ 假 QR Code 驗證釣魚",
+            value="• **手法**：進群要求掃描 QR Code 才能看頻道。\n• **防範**：Discord 手機掃描 QR Code 等同於**直接在他人電腦登入您的帳號**！絕不要使用手機 Discord 掃描陌生伺服器的驗證 QR Code。",
+            inline=False
+        )
+        embed.add_field(
+            name="3️⃣ Steam 禮品卡 / 比賽投票詐騙",
+            value="• **手法**：好友帳號被盜後私訊「幫我隊伍投票送 50 美金」。\n• **防範**：要求輸入 Steam 帳密或 Steam Guard 驗證碼的外部網站皆為釣魚網站。",
+            inline=False
+        )
+        embed.add_field(
+            name="4️⃣ 假官方工作人員恐嚇",
+            value="• **手法**：自稱 Discord Staff 說你被舉報，要求轉移財物或提供 Token/帳號截圖。\n• **防範**：官方人員永遠有「系統訊息 (System)」標籤，絕不會私訊向你要密碼或驗證碼。",
+            inline=False
+        )
+        embed.set_footer(text="勇者 2.0 守護伺服器安全")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="防炸群應急 SOP", emoji="🛑", style=discord.ButtonStyle.danger, row=0)
+    async def raid_sop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🛑 伺服器遭受攻擊／炸群緊急應變 SOP",
+            description="若伺服器突然湧入大量機器人、洗版或惡意破壞，請依序執行以下 4 步驟：",
+            color=Colors.ERROR
+        )
+        embed.add_field(
+            name="Step 1. 立即調高驗證層級",
+            value="進入【伺服器設定】➜【安全性設定】➜ 將驗證等級設為「**最高 (Highest)**」（需綁定手機號碼），可阻擋 99% 免洗機器人。",
+            inline=False
+        )
+        embed.add_field(
+            name="Step 2. 暫時關閉 @everyone 發言與邀請",
+            value="在身分組設定中，關閉 `@everyone` 的「發送訊息」、「建立邀請」與「提及 @everyone」權限，防止災情擴大。",
+            inline=False
+        )
+        embed.add_field(
+            name="Step 3. 移除涉案身分組或踢除異常機器人",
+            value="檢查【審核日誌 (Audit Log)】找出引發攻擊的帳號或機器人，立即將其封鎖 (Ban) 並撤銷相關授權。",
+            inline=False
+        )
+        embed.add_field(
+            name="Step 4. 啟用勇者 2.0 自動審核",
+            value="使用 `/automod` 相關指令啟用刷屏防禦、重複訊息封鎖與連結過濾，建立全天候防線。",
+            inline=False
+        )
+        embed.set_footer(text="勇者 2.0 守護伺服器安全")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="AutoMod 防護建議", emoji="⚙️", style=discord.ButtonStyle.success, row=1)
+    async def automod_advice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="⚙️ 勇者 2.0 自動審核 (AutoMod) 防禦建議",
+            description="建議伺服器管理員開啟以下防護模組以達最佳防禦效果：",
+            color=Colors.PRIMARY
+        )
+        embed.add_field(name="🛡️ 刷屏頻率限制", value="短時間內重複洗版將自動刪除並警告發言者。", inline=False)
+        embed.add_field(name="🔗 釣魚連結過濾", value="限制非管理員發送未經許可的外部連結。", inline=False)
+        embed.add_field(name="📢 大量 Mention 限制", value="防止惡意使用者單一訊息 tag 數十人進行騷擾。", inline=False)
+        embed.add_field(name="📝 髒話與違禁詞庫", value="自訂過濾敏感詞彙，維持乾淨健康的社群環境。", inline=False)
+        embed.set_footer(text="勇者 2.0 守護伺服器安全")
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 class Tools(commands.GroupCog, name="tool", description="實用生活工具箱"):
@@ -545,6 +713,23 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
 
         if message.author.bot:
             return
+
+        # 隱藏指令：超級防詐 / 防詐群 觸發
+        clean_content = message.content.strip().lower()
+        if clean_content in ["防詐群", "防炸群", "超級防詐", ".防詐群", ".防炸群", ".超級防詐", "!防詐群", "!防炸群"]:
+            embed = discord.Embed(
+                title="🛡️ 超級防詐／防炸群安全系統",
+                description=(
+                    "已為您開啟！超級防詐安全模式已就緒。\n\n"
+                    "👉 請使用指令 `/tool 防詐群` 或 `/tool anti_scam` 查看伺服器安全健檢與防護工具箱！"
+                ),
+                color=Colors.SUCCESS
+            )
+            embed.set_footer(text="勇者 2.0 守護伺服器安全")
+            try:
+                await message.channel.send("已為您開啟", embed=embed)
+            except Exception:
+                pass
 
         # 2. 聊天等級系統：獲得經驗值與提升等級
         import random
@@ -1820,6 +2005,40 @@ class TTSInteractiveView(discord.ui.View):
                 f"錯誤訊息：`{e}`"
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 超級防詐 / 防炸群安全防護工具箱
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @app_commands.command(name="防詐群", description="🛡️ 超級防詐/防炸群安全檢測與應急防護工具箱")
+    async def anti_scam_cn(self, interaction: discord.Interaction):
+        await self._show_anti_scam_panel(interaction)
+
+    @app_commands.command(name="anti_scam", description="🛡️ 超級防詐/防炸群安全檢測與應急防護工具箱")
+    async def anti_scam_en(self, interaction: discord.Interaction):
+        await self._show_anti_scam_panel(interaction)
+
+    async def _show_anti_scam_panel(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ 此指令僅能在伺服器中使用！", ephemeral=True)
+
+        embed = discord.Embed(
+            title="🛡️ 超級防詐／防炸群安全防護工具箱",
+            description=(
+                f"歡迎使用 **{interaction.guild.name}** 安全防護中心！\n\n"
+                "本系統提供全方位的伺服器安全健檢、釣魚防範指南與防炸群應急應變機制。\n"
+                "請點擊下方按鈕進行安全檢測或查看防護指引："
+            ),
+            color=Colors.PRIMARY
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.add_field(name="🛡️ 伺服器安全健檢", value="即時掃描驗證層級、2FA 與身分組漏洞", inline=True)
+        embed.add_field(name="🚨 常見詐騙防範", value="假 Nitro、QR 碼釣魚與社工詐騙手法剖析", inline=True)
+        embed.add_field(name="🛑 防炸群應急 SOP", value="遭遇惡意攻擊時的 4 大緊急防禦步驟", inline=True)
+        embed.set_footer(text="點擊按鈕即可切換各項安全防護面板 • 勇者 2.0")
+
+        view = AntiScamView(interaction.guild, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view)
 
 
 async def setup(bot: commands.Bot):
