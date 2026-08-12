@@ -123,6 +123,20 @@ class Economy(commands.GroupCog, name="economy", description="💰 經濟與金�
         )
         await interaction.response.send_message(embed=embed)
 
+    async def _transfer(self, sender_id: int, receiver_id: int, guild_id: int, amount: int) -> bool:
+        """原子化扣款轉帳，防範雙重支付競態條件"""
+        if amount <= 0:
+            return False
+        cursor = await self.bot.db.db.execute(
+            "UPDATE economy SET balance = balance - ? WHERE user_id = ? AND guild_id = ? AND balance >= ?",
+            (amount, sender_id, guild_id, amount)
+        )
+        if cursor.rowcount == 0:
+            return False
+        await self._update_balance(receiver_id, guild_id, amount)
+        await self.bot.db.db.commit()
+        return True
+
     # ── 轉帳 ──
     @app_commands.command(name="pay", description="💸 轉帳金幣給其他成員")
     @app_commands.describe(member="要轉帳的對象", amount="金額")
@@ -134,14 +148,12 @@ class Economy(commands.GroupCog, name="economy", description="💰 經濟與金�
         if amount <= 0:
             return await interaction.response.send_message("❌ 金額必須大於 0！", ephemeral=True)
 
-        bal = await self._get_balance(interaction.user.id, interaction.guild_id)
-        if bal < amount:
+        success = await self._transfer(interaction.user.id, member.id, interaction.guild_id, amount)
+        if not success:
+            bal = await self._get_balance(interaction.user.id, interaction.guild_id)
             return await interaction.response.send_message(
-                f"❌ 你的金幣不足！目前餘額：**{bal:,}** 🪙", ephemeral=True
+                f"❌ 你的金幣不足或轉帳失敗！目前餘額：**{bal:,}** 🪙", ephemeral=True
             )
-
-        await self._update_balance(interaction.user.id, interaction.guild_id, -amount)
-        await self._update_balance(member.id, interaction.guild_id, amount)
 
         embed = discord.Embed(
             title="💸 轉帳成功",

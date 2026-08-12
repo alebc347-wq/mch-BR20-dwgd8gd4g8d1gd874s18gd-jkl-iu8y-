@@ -71,7 +71,18 @@ def _safe_eval(node: ast.AST, scientific: bool) -> float:
         if isinstance(node.op, ast.Mod):
             return left % right
         if isinstance(node.op, ast.Pow):
-            return left ** right
+            if abs(right) > 1000:
+                raise ValueError("指數過大，極限為 1000")
+            if abs(left) > 1e50 and right > 1:
+                raise ValueError("底數過大，無法進行次方運算")
+            try:
+                res = left ** right
+            except OverflowError:
+                raise OverflowError("結果太大，超出範圍")
+            if isinstance(res, (int, float, complex)) and not isinstance(res, bool):
+                if hasattr(res, 'real') and abs(res.real) > 1e100:
+                    raise ValueError("結果數量級過大，超出安全限制")
+            return res
 
     if scientific:
         if isinstance(node, ast.Name) and node.id in SCIENTIFIC_NAMES:

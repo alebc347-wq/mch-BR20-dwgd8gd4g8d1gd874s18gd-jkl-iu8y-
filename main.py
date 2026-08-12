@@ -391,6 +391,7 @@ class ProBot(commands.Bot):
             "cogs.auto_update",
             "cogs.discord_control",
             "cogs.role_claim",
+            "cogs.anti_plagiarism",
         ]
         
         for cog in cog_files:
@@ -417,6 +418,16 @@ class ProBot(commands.Bot):
             # 僅允許在「總控協調頻道」進行 Interaction（例如按鈕控制與同步），以防搶答
             if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
                 return True
+            # 全域黑名單過濾 (Anti-Plagiarism & Global Blacklist Filter)
+            if hasattr(interaction.client, "db") and interaction.client.db:
+                try:
+                    if await interaction.client.db.is_blacklisted(interaction.user.id):
+                        return False
+                    if interaction.guild_id and await interaction.client.db.is_blacklisted(interaction.guild_id):
+                        return False
+                except Exception:
+                    pass
+
             return getattr(interaction.client, "is_active_node", True)
 
         self.tree.interaction_check = globally_check_interaction

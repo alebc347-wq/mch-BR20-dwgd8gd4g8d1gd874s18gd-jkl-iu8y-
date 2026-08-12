@@ -64,6 +64,12 @@ class Database:
     async def _create_tables(self):
         """建立所有必要的表"""
         await self.db.executescript("""
+
+            -- 啟用全自動空間回收與效能優化 (SQLite Auto-Vacuum & Space Optimization)
+            PRAGMA auto_vacuum = FULL;
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+
             -- 警告紀錄
             CREATE TABLE IF NOT EXISTS warnings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,6 +226,23 @@ class Database:
                 note TEXT,
                 PRIMARY KEY (guild_id, user_id)
             );
+
+            -- 全域黑名單 (防抄襲與惡意用戶封鎖)
+            CREATE TABLE IF NOT EXISTS global_blacklist (
+                target_id INTEGER PRIMARY KEY,
+                target_type TEXT NOT NULL DEFAULT 'user',
+                reason TEXT,
+                added_by INTEGER,
+                added_at TEXT
+            );
+
+            -- 伺服器白名單制度
+            CREATE TABLE IF NOT EXISTS guild_whitelist (
+                guild_id INTEGER PRIMARY KEY,
+                added_at TEXT,
+                note TEXT
+            );
+
 
             -- 考試題目
             CREATE TABLE IF NOT EXISTS exam_questions (
@@ -612,73 +635,33 @@ class Database:
             print(f"Error setting spam limit: {e}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 音樂系統 - 使用者最愛清單
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 音樂系統 - 使用者權限
+    @staticmethod
+    def _parse_safe_days(expires_in_days) -> int:
+        """安全天數防呆轉換，避免 OverflowError/TypeError"""
+        if expires_in_days is None:
+            return 365000
+        try:
+            return min(int(expires_in_days), 365000)
+        except Exception:
+            return 30
 
-    async def add_favorite_song(self, user_id: int, title: str, uri: str, author: str = "", duration: int = 0) -> bool:
-        """新增最愛歌曲，若已存在則不重複新增"""
-        async with self.db.execute(
-            "SELECT id FROM user_favorites WHERE user_id = ? AND uri = ?", (user_id, uri)
-        ) as cursor:
-            if await cursor.fetchone():
-                return False  # 已存在
-        
-        now = datetime.now(timezone.utc).isoformat()
-        await self.db.execute(
-            "INSERT INTO user_favorites (user_id, title, uri, author, duration, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, title, uri, author, duration, now),
-        )
-        await self.db.commit()
-        return True
-
-    async def get_favorite_songs(self, user_id: int) -> list:
-        """取得使用者的所有最愛歌曲"""
-        async with self.db.execute(
-            "SELECT * FROM user_favorites WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
-        ) as cursor:
-            return await cursor.fetchall()
-
-    async def remove_favorite_song(self, user_id: int, song_id: int) -> bool:
-        """依 ID 移除最愛歌曲"""
-        cursor = await self.db.execute(
-            "DELETE FROM user_favorites WHERE id = ? AND user_id = ?", (song_id, user_id)
-        )
-        await self.db.commit()
-        return cursor.rowcount > 0
-
-    async def is_favorite_song(self, user_id: int, uri: str) -> bool:
-        """檢查歌曲是否已被加入最愛"""
-        async with self.db.execute(
-            "SELECT id FROM user_favorites WHERE user_id = ? AND uri = ?", (user_id, uri)
-        ) as cursor:
-            return await cursor.fetchone() is not None
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Pro 系統金鑰與狀態管理
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    async def add_pro_key(self, key: str, expires_in_days: int = 30) -> None:
-        """新增一個未使用的 Pro 激活金鑰"""
-        now = datetime.now(timezone.utc).isoformat()
-        await self.db.execute(
-            "INSERT INTO pro_keys (key, expires_in_days, created_at) VALUES (?, ?, ?)",
-            (key, expires_in_days, now)
-        )
-        await self.db.commit()
-
-    async def get_pro_keys(self) -> list:
-        """獲取所有未使用的 Pro 金鑰"""
-        async with self.db.execute("SELECT * FROM pro_keys ORDER BY created_at DESC") as cursor:
-            return await cursor.fetchall()
-
-    async def get_used_keys(self) -> list:
-        """獲取所有已使用的 Pro 金鑰記錄"""
-        async with self.db.execute("SELECT * FROM used_keys ORDER BY used_at DESC") as cursor:
-            return await cursor.fetchall()
+    @staticmethod
+    def _calc_expires_at(existing_expires_str: str | None, safe_days: int, now: datetime) -> str:
+        """計算過期時間（若未過期則自動疊加延長）"""
+        from datetime import timedelta
+        expires_at = now + timedelta(days=safe_days)
+        if existing_expires_str:
+            try:
+                ext_expires = datetime.fromisoformat(existing_expires_str).replace(tzinfo=timezone.utc)
+                if ext_expires > now.replace(tzinfo=timezone.utc):
+                    expires_at = ext_expires + timedelta(days=safe_days)
+            except Exception:
+                pass
+        return expires_at.isoformat()
 
     async def use_pro_key(self, key: str, guild_id: int, user_id: int) -> bool:
         """使用金鑰激活該伺服器的 Pro 權限"""
-        # 1. 檢查金鑰是否存在於未使用的列表中
         async with self.db.execute("SELECT expires_in_days FROM pro_keys WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -686,44 +669,26 @@ class Database:
             expires_in_days = row[0]
 
         now = datetime.now(timezone.utc)
-        now_str = now.isoformat()
-        
-        # 計算過期時間
-        from datetime import timedelta
-        expires_at = (now + timedelta(days=expires_in_days)).isoformat()
+        safe_days = self._parse_safe_days(expires_in_days)
 
-        # 2. 插入使用記錄
-        await self.db.execute(
-            "INSERT INTO used_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
-            (key, guild_id, user_id, now_str)
-        )
-
-        # 3. 刪除未使用的金鑰
-        await self.db.execute("DELETE FROM pro_keys WHERE key = ?", (key,))
-
-        # 4. 更新/插入伺服器 Pro 狀態
-        # 如果已經是 Pro 且未過期，則延長時間，否則從現在開始算
         async with self.db.execute("SELECT expires_at FROM pro_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
             existing = await cursor.fetchone()
-            if existing:
-                try:
-                    ext_expires = datetime.fromisoformat(existing[0])
-                    if ext_expires.replace(tzinfo=timezone.utc) > now.replace(tzinfo=timezone.utc):
-                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=expires_in_days)).isoformat()
-                except Exception:
-                    pass
+            expires_at = self._calc_expires_at(existing[0] if existing else None, safe_days, now)
 
         await self.db.execute(
-            "INSERT OR REPLACE INTO pro_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
-            (guild_id, user_id, now_str, expires_at)
+            "INSERT INTO used_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
+            (key, guild_id, user_id, now.isoformat())
         )
-
+        await self.db.execute("DELETE FROM pro_keys WHERE key = ?", (key,))
+        await self.db.execute(
+            "INSERT OR REPLACE INTO pro_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, now.isoformat(), expires_at)
+        )
         await self.db.commit()
         return True
 
     async def is_guild_pro(self, guild_id: int) -> bool:
         """檢查該伺服器是否擁有有效的 Pro 權限"""
-        # 若已擁有 Ultra 權限，自動判定為擁有 Pro 權限
         if await self.is_guild_ultra(guild_id):
             return True
 
@@ -731,12 +696,9 @@ class Database:
             row = await cursor.fetchone()
             if not row:
                 return False
-            
-            expires_at_str = row[0]
             try:
-                expires_at = datetime.fromisoformat(expires_at_str).replace(tzinfo=timezone.utc)
-                now = datetime.now(timezone.utc)
-                return expires_at > now
+                expires_at = datetime.fromisoformat(row[0]).replace(tzinfo=timezone.utc)
+                return expires_at > datetime.now(timezone.utc)
             except Exception:
                 return False
 
@@ -759,6 +721,53 @@ class Database:
             return await cursor.fetchall()
 
     async def get_used_ultra_keys(self) -> list:
+        """獲取所有已使用的 Ultra 金鑰記錄"""
+        async with self.db.execute("SELECT * FROM used_ultra_keys ORDER BY used_at DESC") as cursor:
+            return await cursor.fetchall()
+
+    async def use_ultra_key(self, key: str, guild_id: int, user_id: int) -> bool:
+        """使用金鑰激活該伺服器的 Ultra 權限"""
+        async with self.db.execute("SELECT expires_in_days FROM ultra_keys WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            expires_in_days = row[0]
+
+        now = datetime.now(timezone.utc)
+        safe_days = self._parse_safe_days(expires_in_days)
+
+        async with self.db.execute("SELECT expires_at FROM ultra_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
+            existing = await cursor.fetchone()
+            expires_at = self._calc_expires_at(existing[0] if existing else None, safe_days, now)
+
+        await self.db.execute(
+            "INSERT INTO used_ultra_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
+            (key, guild_id, user_id, now.isoformat())
+        )
+        await self.db.execute("DELETE FROM ultra_keys WHERE key = ?", (key,))
+        await self.db.execute(
+            "INSERT OR REPLACE INTO ultra_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, now.isoformat(), expires_at)
+        )
+        await self.db.commit()
+        return True
+
+    async def activate_ultra_guild_direct(self, guild_id: int, user_id: int, expires_in_days: int = 30) -> None:
+        """直接激活該伺服器的 Ultra 權限 (用於訂閱成功)"""
+        now = datetime.now(timezone.utc)
+        safe_days = self._parse_safe_days(expires_in_days)
+
+        async with self.db.execute("SELECT expires_at FROM ultra_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
+            existing = await cursor.fetchone()
+            expires_at = self._calc_expires_at(existing[0] if existing else None, safe_days, now)
+
+        await self.db.execute(
+            "INSERT OR REPLACE INTO ultra_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, now.isoformat(), expires_at)
+        )
+        await self.db.commit()
+
+    async def get_all_used_ultra_keys(self) -> list:
         """獲取所有已使用的 Ultra 金鑰記錄"""
         async with self.db.execute("SELECT * FROM used_ultra_keys ORDER BY used_at DESC") as cursor:
             return await cursor.fetchall()
@@ -1260,3 +1269,52 @@ class Database:
             return current["exp"], current["level"], False
 
         return new_exp, new_level, leveled_up
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 全域黑名單與防抄襲白名單管理 (Anti-Plagiarism & Security Core)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def add_global_blacklist(self, target_id: int, target_type: str = 'user', reason: str = '', added_by: int = 0) -> None:
+        """將使用者或伺服器加入全域黑名單"""
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "INSERT OR REPLACE INTO global_blacklist (target_id, target_type, reason, added_by, added_at) VALUES (?, ?, ?, ?, ?)",
+            (target_id, target_type, reason, added_by, now)
+        )
+        await self.db.commit()
+
+    async def remove_global_blacklist(self, target_id: int) -> None:
+        """將目標從全域黑名單移除"""
+        await self.db.execute("DELETE FROM global_blacklist WHERE target_id = ?", (target_id,))
+        await self.db.commit()
+
+    async def is_blacklisted(self, target_id: int) -> bool:
+        """檢查 ID 是否在全域黑名單中"""
+        async with self.db.execute("SELECT 1 FROM global_blacklist WHERE target_id = ?", (target_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
+
+    async def get_global_blacklist(self) -> list:
+        """獲取所有全域黑名單紀錄"""
+        async with self.db.execute("SELECT target_id, target_type, reason, added_by, added_at FROM global_blacklist ORDER BY added_at DESC") as cursor:
+            return await cursor.fetchall()
+
+    async def add_guild_whitelist(self, guild_id: int, note: str = '') -> None:
+        """新增伺服器至授權白名單"""
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "INSERT OR REPLACE INTO guild_whitelist (guild_id, added_at, note) VALUES (?, ?, ?)",
+            (guild_id, now, note)
+        )
+        await self.db.commit()
+
+    async def remove_guild_whitelist(self, guild_id: int) -> None:
+        """自授權白名單移除伺服器"""
+        await self.db.execute("DELETE FROM guild_whitelist WHERE guild_id = ?", (guild_id,))
+        await self.db.commit()
+
+    async def is_guild_whitelisted(self, guild_id: int) -> bool:
+        """檢查伺服器是否在授權白名單中"""
+        async with self.db.execute("SELECT 1 FROM guild_whitelist WHERE guild_id = ?", (guild_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
