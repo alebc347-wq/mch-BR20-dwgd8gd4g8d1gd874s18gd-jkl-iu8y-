@@ -415,9 +415,7 @@ class ProBot(commands.Bot):
                 coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
             except Exception:
                 pass
-            # 僅允許在「總控協調頻道」進行 Interaction（例如按鈕控制與同步），以防搶答
-            if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
-                return True
+
             # 全域黑名單過濾 (Anti-Plagiarism & Global Blacklist Filter)
             if hasattr(interaction.client, "db") and interaction.client.db:
                 try:
@@ -428,7 +426,17 @@ class ProBot(commands.Bot):
                 except Exception:
                     pass
 
-            return getattr(interaction.client, "is_active_node", True)
+            is_active = getattr(interaction.client, "is_active_node", True)
+
+            # 若本機為備用機 (Idle)，僅允許在總控頻道響應緊急控制按鈕，其餘所有指令與互動一律靜默
+            if not is_active:
+                if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
+                    custom_id = getattr(interaction, "data", {}).get("custom_id", "")
+                    if custom_id in {"force_active_1", "force_active_2", "auto_schedule", "sync_btn", "reboot_btn", "restart_btn"}:
+                        return True
+                return False
+
+            return True
 
         self.tree.interaction_check = globally_check_interaction
 
@@ -453,14 +461,13 @@ class ProBot(commands.Bot):
 ╚══════════════════════════════════════════╝
         """)
 
-        # 即時同步 Slash Commands 到各個伺服器 (避開 Discord 1小時全域延遲)
+        # 清除過往伺服器特定指令，統一使用全域指令 (Global Commands)，徹底消除 Discord 選單重複指令的問題
         for g in self.guilds:
             try:
-                self.tree.copy_global_to(guild=g)
+                self.tree.clear_commands(guild=g)
                 await self.tree.sync(guild=g)
-                print(f"✅ 已即時同步 Slash Commands 至伺服器: {g.name}")
-            except Exception as ex:
-                print(f"⚠️ 即時同步至伺服器 {g.name} 失敗: {ex}")
+            except Exception:
+                pass
         # 啟動完畢，切換回線上狀態，並設定預設活動
         await self.change_presence(
             activity=discord.Activity(
