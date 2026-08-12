@@ -11,19 +11,7 @@ class AntiPlagiarism(commands.Cog):
         self.bot = bot
         self.db: Database = bot.db
 
-    def is_owner_or_admin():
-        """檢查是否為開發者/管理員"""
-        async def predicate(interaction: discord.Interaction):
-            admin_id = 1437408048934027274
-            if interaction.user.id == admin_id or interaction.user.guild_permissions.administrator:
-                return True
-            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
-            return False
-        return app_commands.check(predicate)
-
-    @app_commands.command(name="terms", description="查看「倉鼠勇者」原創版權條款、反抄襲聲明與服務規範")
-    @app_commands.command(name="copyright", description="查看「倉鼠勇者」原創版權條款、反抄襲聲明與服務規範")
-    async def terms_slash(self, interaction: discord.Interaction):
+    async def _send_terms_embed(self, interaction: discord.Interaction):
         """顯示完整的版權與防抄襲聲明 Embed"""
         embed = discord.Embed(
             title="🛡️ 倉鼠勇者 原創聲明與反抄襲系統規範",
@@ -77,6 +65,14 @@ class AntiPlagiarism(commands.Cog):
         embed.set_footer(text="🛡️ 倉鼠勇者原創防偽認證 | Anti-Plagiarism Core Enabled", icon_url=self.bot.user.display_avatar.url if self.bot.user else None)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="terms", description="查看「倉鼠勇者」原創版權條款、反抄襲聲明與服務規範")
+    async def terms_slash(self, interaction: discord.Interaction):
+        await self._send_terms_embed(interaction)
+
+    @app_commands.command(name="copyright", description="查看「倉鼠勇者」原創版權條款、反抄襲聲明與服務規範")
+    async def copyright_slash(self, interaction: discord.Interaction):
+        await self._send_terms_embed(interaction)
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 全域黑名單與白名單管理指令
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -86,6 +82,11 @@ class AntiPlagiarism(commands.Cog):
     @admin_group.command(name="blacklist_add", description="[管理員] 將使用者或伺服器加入全域黑名單")
     @app_commands.describe(target_id="目標 User ID 或 Guild ID", target_type="類型 (user/guild)", reason="封鎖原因")
     async def blacklist_add(self, interaction: discord.Interaction, target_id: str, target_type: str = "user", reason: str = "抄襲/惡意破壞"):
+        admin_id = 1437408048934027274
+        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+            return
+
         try:
             tid = int(target_id)
         except ValueError:
@@ -98,6 +99,11 @@ class AntiPlagiarism(commands.Cog):
     @admin_group.command(name="blacklist_remove", description="[管理員] 將目標從全域黑名單移除")
     @app_commands.describe(target_id="目標 ID")
     async def blacklist_remove(self, interaction: discord.Interaction, target_id: str):
+        admin_id = 1437408048934027274
+        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+            return
+
         try:
             tid = int(target_id)
         except ValueError:
@@ -109,6 +115,11 @@ class AntiPlagiarism(commands.Cog):
 
     @admin_group.command(name="blacklist_list", description="[管理員] 查看全域黑名單列表")
     async def blacklist_list(self, interaction: discord.Interaction):
+        admin_id = 1437408048934027274
+        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+            return
+
         records = await self.db.get_global_blacklist()
         if not records:
             await interaction.response.send_message("ℹ️ 當前全域黑名單為空。", ephemeral=True)
