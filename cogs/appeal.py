@@ -247,6 +247,7 @@ class AppealErrorView(discord.ui.View):
         self.error_msg = error_msg
         self.command_name = command_name
         self.occurrence_time = occurrence_time
+        self.add_item(discord.ui.Button(label="前往申訴伺服器", style=discord.ButtonStyle.link, url=APPEAL_SERVER_INVITE, emoji="🔗"))
 
     @discord.ui.button(label="📢 申訴 / 回報此錯誤", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="appeal_error_btn")
     async def appeal_error(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -265,10 +266,6 @@ class AppealErrorView(discord.ui.View):
             f"發生時間：{self.occurrence_time}"
         )
         await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="前往申訴伺服器", style=discord.ButtonStyle.link, url=APPEAL_SERVER_INVITE, emoji="🔗")
-    async def goto_server(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
