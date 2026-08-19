@@ -30,7 +30,7 @@
   * **問題**：永久金鑰或超大天數在與 `datetime.now()` 做 `timedelta(days=expires_in_days)` 計算時，會因為天數過大或 None 類型引發 `OverflowError` 與 `TypeError` 導致激活失敗，且中斷了 `db.commit()`。
   * **修復**：在 `utils/database.py` 中實作了 `safe_days` 型態防呆轉換，限制最大天數為 `365000` (約 1000 年)，並在所有 `timedelta` 計算時強制使用 `safe_days`。
 * **語音指令聊天誤觸 Bug**：
-  * **問題**：在 `cogs/moderation.py` 中，語音控制「滾」與「過來」原本使用 `in content` 子字串匹配，導致聊天聊到相關詞彙時（如：滾動、來一下）會誤觸語音斷線/加入。
+  * **問題**：在 `cogs![alt text](image.png)/moderation.py` 中，語音控制「滾」與「過來」原本使用 `in content` 子字串匹配，導致聊天聊到相關詞彙時（如：滾動、來一下）會誤觸語音斷線/加入。
   * **修復**：修改為「完整匹配」並加入可選的前綴清理，只有單獨發送「滾/過來」或「.滾/.過來」時才會觸發。
 
 ## ⛈️ 地震監控與天災速報系統

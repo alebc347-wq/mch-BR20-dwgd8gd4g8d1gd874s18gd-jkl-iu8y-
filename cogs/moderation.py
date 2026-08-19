@@ -13,6 +13,7 @@ import asyncio
 from config import Colors, Emoji, BadgeImages, parse_time, format_timedelta
 from utils.embeds import EmbedFactory, ConfirmView, UserProfileButton
 from utils.checks import check_hierarchy, check_member_hierarchy
+from cogs.appeal import AppealButton
 
 
 class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器管理與懲處系統"):
@@ -41,7 +42,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
         # 嘗試 DM 通知
         try:
             dm_embed = EmbedFactory.kick(user, interaction.user, reason, interaction.guild, self.bot)
-            await user.send(dm_embed)
+            appeal_view = AppealButton(source_guild_id=interaction.guild.id, source_guild_name=interaction.guild.name)
+            await user.send(embed=dm_embed, view=appeal_view)
         except discord.Forbidden:
             pass
         
@@ -61,7 +63,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
         
         try:
             dm_embed = EmbedFactory.kick(user, ctx.author, reason, ctx.guild, self.bot)
-            await user.send(embed=dm_embed)
+            appeal_view = AppealButton(source_guild_id=ctx.guild.id, source_guild_name=ctx.guild.name)
+            await user.send(embed=dm_embed, view=appeal_view)
         except discord.Forbidden:
             pass
         
@@ -103,7 +106,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
                 )
             try:
                 dm_embed = EmbedFactory.ban(user, interaction.user, days, reason, interaction.guild, self.bot)
-                await user.send(dm_embed)
+                appeal_view = AppealButton(source_guild_id=interaction.guild.id, source_guild_name=interaction.guild.name)
+                await user.send(embed=dm_embed, view=appeal_view)
             except discord.Forbidden:
                 pass
         
@@ -138,7 +142,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
                 return await ctx.send(embed=EmbedFactory.error("無法執行", reason_msg))
             try:
                 dm_embed = EmbedFactory.ban(user, ctx.author, days, reason, ctx.guild, self.bot)
-                await user.send(embed=dm_embed)
+                appeal_view = AppealButton(source_guild_id=ctx.guild.id, source_guild_name=ctx.guild.name)
+                await user.send(embed=dm_embed, view=appeal_view)
             except discord.Forbidden:
                 pass
         
@@ -190,7 +195,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
         
         # DM 通知
         try:
-            await user.send(embed=embed)
+            appeal_view = AppealButton(source_guild_id=interaction.guild.id, source_guild_name=interaction.guild.name)
+            await user.send(embed=embed, view=appeal_view)
         except discord.Forbidden:
             pass
         
@@ -256,7 +262,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
         embed = EmbedFactory.timeout(user, ctx.author, duration_str, reason, ctx.guild, self.bot)
         
         try:
-            await user.send(embed=embed)
+            appeal_view = AppealButton(source_guild_id=ctx.guild.id, source_guild_name=ctx.guild.name)
+            await user.send(embed=embed, view=appeal_view)
         except discord.Forbidden:
             pass
         
@@ -303,7 +310,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
 
         # DM 通知
         try:
-            await user.send(embed=embed)
+            appeal_view = AppealButton(source_guild_id=ctx.guild.id, source_guild_name=ctx.guild.name)
+            await user.send(embed=embed, view=appeal_view)
         except discord.Forbidden:
             pass
 
@@ -377,7 +385,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
 
         # DM 通知
         try:
-            await user.send(embed=embed)
+            appeal_view = AppealButton(source_guild_id=ctx.guild.id, source_guild_name=ctx.guild.name)
+            await user.send(embed=embed, view=appeal_view)
         except discord.Forbidden:
             pass
 
@@ -419,7 +428,8 @@ class Moderation(commands.GroupCog, name="mod", description="🛡️ 伺服器�
         
         # DM 通知
         try:
-            await user.send(embed=embed)
+            appeal_view = AppealButton(source_guild_id=interaction.guild.id, source_guild_name=interaction.guild.name)
+            await user.send(embed=embed, view=appeal_view)
         except discord.Forbidden:
             pass
         

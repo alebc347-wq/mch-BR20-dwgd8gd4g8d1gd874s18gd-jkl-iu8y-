@@ -178,17 +178,32 @@ class TicketSelectView(View):
     @discord.ui.select(
         placeholder="請選擇工單類型",
         options=[
-            discord.SelectOption(label="申訴", description="我要提出申訴", emoji="📢"),
             discord.SelectOption(label="投訴", description="我要投訴人員/事件", emoji="😡"),
             discord.SelectOption(label="法律問題", description="與法律相關的疑問", emoji="⚖️"),
             discord.SelectOption(label="檢舉", description="檢舉違規行為", emoji="🚨"),
-            discord.SelectOption(label="機器人問題", description="Bot 功能/錯誤回報", emoji="🤖"),
+            discord.SelectOption(label="📢 申訴 / 機器人問題", description="申訴、Bug 回報（透過申訴系統）", emoji="📢"),
         ],
     )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         category = select.values[0]
-        modal = TicketForm(category)
-        await interaction.response.send_modal(modal)
+        if "申訴" in category:
+            # 導向新的申訴系統
+            try:
+                from cogs.appeal import AppealSelectView
+                guild_id = interaction.guild_id if interaction.guild else None
+                guild_name = interaction.guild.name if interaction.guild else None
+                view = AppealSelectView(source_guild_id=guild_id, source_guild_name=guild_name)
+                embed = discord.Embed(
+                    title="📢 申訴系統",
+                    description="請從下方選單選擇你的申訴類型，填寫詳細說明後，系統會自動通知工作人員。",
+                    color=0x5865F2,
+                )
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            except Exception:
+                await interaction.response.send_message("❌ 申訴系統暫時無法使用，請稍後再試。", ephemeral=True)
+        else:
+            modal = TicketForm(category)
+            await interaction.response.send_modal(modal)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

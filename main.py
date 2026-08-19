@@ -189,61 +189,35 @@ async def restart(interaction: discord.Interaction):
 
 
 class ErrorReportView(discord.ui.View):
-    """錯誤回報按鈕"""
+    """錯誤申訴按鈕（重新導向至申訴系統）"""
     def __init__(self, bot: commands.Bot, error_name: str, error_msg: str, command_name: str, occurrence_time: str):
-        super().__init__(timeout=180)  # 3分鐘超時
+        super().__init__(timeout=180)
         self.bot = bot
         self.error_name = error_name
         self.error_msg = error_msg
         self.command_name = command_name
         self.occurrence_time = occurrence_time
 
-    @discord.ui.button(label="回報錯誤", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="report_error_btn")
+    @discord.ui.button(label="📢 申訴 / 回報此錯誤", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="report_error_btn")
     async def report_error(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 尋找 Bot 擁有者
-        owner_id = 1437408048934027274  # 預設最高權限 ID
-        try:
-            import config
-            if hasattr(config, "OWNER_ID") and config.OWNER_ID != 0:
-                owner_id = config.OWNER_ID
-        except Exception:
-            pass
+        from cogs.appeal import AppealFormModal, APPEAL_SERVER_INVITE
+        modal = AppealFormModal(
+            appeal_type="機器人Bug",
+            source_guild_id=interaction.guild_id if interaction.guild else None,
+            source_guild_name=interaction.guild.name if interaction.guild else None,
+            bot=self.bot,
+        )
+        modal.content.default = (
+            f"指令：{self.command_name}\n"
+            f"錯誤類型：{self.error_name}\n"
+            f"錯誤訊息：{self.error_msg}\n"
+            f"發生時間：{self.occurrence_time}"
+        )
+        await interaction.response.send_modal(modal)
 
-        try:
-            owner = await self.bot.fetch_user(owner_id)
-            if not owner:
-                await interaction.response.send_message("❌ 無法找到 Bot 擁有者，回報失敗。", ephemeral=True)
-                return
-
-            embed = discord.Embed(
-                title="🚨 收到錯誤回報",
-                description=(
-                    f"**回報者:** {interaction.user.mention} ({interaction.user} | ID: {interaction.user.id})\n"
-                    f"**指令:** `{self.command_name}`\n"
-                    f"**發生伺服器:** {interaction.guild.name if interaction.guild else '私訊'} (ID: {interaction.guild.id if interaction.guild else 'None'})\n"
-                    f"**發生時間:** `{self.occurrence_time}`\n"
-                    f"**錯誤類型:** `{self.error_name}`\n"
-                    f"**錯誤訊息:**\n```py\n{self.error_msg}\n```"
-                ),
-                color=0xED4245,
-                timestamp=discord.utils.utcnow()
-            )
-            embed.set_thumbnail(url="https://files.catbox.moe/pn6md9.png")
-            
-            await owner.send(embed=embed)
-            
-            # 更新按鈕狀態
-            button.disabled = True
-            button.label = "已成功回報"
-            button.style = discord.ButtonStyle.success
-            await interaction.response.edit_message(view=self)
-            
-            await interaction.followup.send("✅ 錯誤已成功回報給 Bot 擁有者！", ephemeral=True)
-        except Exception as e:
-            try:
-                await interaction.response.send_message(f"❌ 回報失敗，原因：{str(e)}", ephemeral=True)
-            except Exception:
-                pass
+    @discord.ui.button(label="前往申訴伺服器", style=discord.ButtonStyle.link, url="https://discord.gg/cuSxhwCvb6", emoji="🔗")
+    async def goto_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
 
 
 class ProBot(commands.Bot):
@@ -392,6 +366,7 @@ class ProBot(commands.Bot):
             "cogs.discord_control",
             "cogs.role_claim",
             "cogs.anti_plagiarism",
+            "cogs.appeal",
         ]
         
         for cog in cog_files:
@@ -480,6 +455,13 @@ class ProBot(commands.Bot):
         # 註冊持久性 View
         from cogs.logging_cog import LogConfigButton
         self.add_view(LogConfigButton())
+
+        # 註冊申訴面板永久 View
+        try:
+            from cogs.appeal import AppealPanelView, AppealButton
+            self.add_view(AppealPanelView())
+        except Exception as e:
+            print(f"[Appeal] 無法註冊永久 View: {e}")
 
         # 檢查是否有重啟標記，若有則在「顯示伺服器目前變動」頻道發送成功重啟通知 (若未關閉通知)
         RESTART_FLAG_FILE = os.path.join(os.path.dirname(__file__), "data", "restart_flag.json")

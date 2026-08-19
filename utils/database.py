@@ -339,6 +339,14 @@ class Database:
                 last_exp_time TEXT,
                 PRIMARY KEY (guild_id, user_id)
             );
+
+            -- 申訴系統設定
+            CREATE TABLE IF NOT EXISTS appeal_settings (
+                guild_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                PRIMARY KEY (guild_id, key)
+            );
         """)
         await self.db.commit()
 
@@ -1318,3 +1326,30 @@ class Database:
         async with self.db.execute("SELECT 1 FROM guild_whitelist WHERE guild_id = ?", (guild_id,)) as cursor:
             row = await cursor.fetchone()
             return row is not None
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 申訴系統設定
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def set_appeal_setting(self, guild_id: int, key: str, value) -> None:
+        """設定申訴系統的某個設定值"""
+        await self.db.execute(
+            "INSERT OR REPLACE INTO appeal_settings (guild_id, key, value) VALUES (?, ?, ?)",
+            (guild_id, key, str(value))
+        )
+        await self.db.commit()
+
+    async def get_appeal_settings(self, guild_id: int) -> dict:
+        """取得申訴系統的所有設定"""
+        async with self.db.execute(
+            "SELECT key, value FROM appeal_settings WHERE guild_id = ?", (guild_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        result = {}
+        for row in rows:
+            k, v = row[0], row[1]
+            try:
+                result[k] = int(v)
+            except (ValueError, TypeError):
+                result[k] = v
+        return result

@@ -522,35 +522,20 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
         await interaction.followup.send(embed=embed, view=view)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 錯誤回報指令
+    # 錯誤回報指令（導向申訴系統）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    @app_commands.command(name="bugreport", description="🐛 回報 Bug 給機器人管理員")
+    @app_commands.command(name="bugreport", description="🐛 回報 Bug（透過申訴系統）")
     @app_commands.describe(description="描述你遇到的問題")
     async def bugreport(self, interaction: discord.Interaction, description: str):
-        import os
-        owner_id = int(os.getenv("OWNER_ID", "0"))
-        
-        embed = discord.Embed(
-            title="🐛 Bug 回報",
-            description=description,
-            color=Colors.WARNING,
+        from cogs.appeal import AppealFormModal
+        modal = AppealFormModal(
+            appeal_type="機器人Bug",
+            source_guild_id=interaction.guild_id if interaction.guild else None,
+            source_guild_name=interaction.guild.name if interaction.guild else None,
+            bot=self.bot,
         )
-        embed.add_field(name="回報者", value=f"{interaction.user} (`{interaction.user.id}`)", inline=True)
-        embed.add_field(name="伺服器", value=f"{interaction.guild.name} (`{interaction.guild_id}`)", inline=True)
-        embed.add_field(name="頻道", value=f"{interaction.channel.mention}", inline=True)
-        embed.timestamp = discord.utils.utcnow()
-        
-        if owner_id:
-            try:
-                owner = await self.bot.fetch_user(owner_id)
-                await owner.send(embed=embed)
-            except Exception:
-                pass
-        
-        await interaction.response.send_message(
-            embed=EmbedFactory.success("已收到回報", "感謝你的回報！管理員會盡快處理。🙏"),
-            ephemeral=True,
-        )
+        modal.content.default = description
+        await interaction.response.send_modal(modal)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # SERVER_INFORMATION — 匯出伺服器完整資訊 (ZIP)
