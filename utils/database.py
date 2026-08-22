@@ -668,6 +668,25 @@ class Database:
                 pass
         return expires_at.isoformat()
 
+    async def add_pro_key(self, key: str, expires_in_days: int = 30) -> None:
+        """新增一個未使用的 Pro 激活金鑰"""
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "INSERT INTO pro_keys (key, expires_in_days, created_at) VALUES (?, ?, ?)",
+            (key, expires_in_days, now)
+        )
+        await self.db.commit()
+
+    async def get_pro_keys(self) -> list:
+        """獲取所有未使用的 Pro 金鑰"""
+        async with self.db.execute("SELECT * FROM pro_keys ORDER BY created_at DESC") as cursor:
+            return await cursor.fetchall()
+
+    async def get_used_keys(self) -> list:
+        """獲取所有已使用的 Pro 金鑰記錄"""
+        async with self.db.execute("SELECT * FROM used_keys ORDER BY used_at DESC") as cursor:
+            return await cursor.fetchall()
+
     async def use_pro_key(self, key: str, guild_id: int, user_id: int) -> bool:
         """使用金鑰激活該伺服器的 Pro 權限"""
         async with self.db.execute("SELECT expires_in_days FROM pro_keys WHERE key = ?", (key,)) as cursor:
