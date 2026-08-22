@@ -88,17 +88,27 @@ def _role_hint_lines(required_role_id: int | None, blocked_role_id: int | None, 
 
 class GiveawayJoinButton(discord.ui.View):
     """抽獎參加按鈕"""
-    def __init__(self, giveaway_id: int):
+    def __init__(self, giveaway_id: int | None = None):
         super().__init__(timeout=None)
         self.giveaway_id = giveaway_id
 
     @discord.ui.button(label="🎉 參加抽獎", style=discord.ButtonStyle.success, custom_id="giveaway_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         db = interaction.client.db
-        giveaway = await db.get_giveaway(self.giveaway_id)
+        giveaway = None
+        if self.giveaway_id:
+            giveaway = await db.get_giveaway(self.giveaway_id)
+
+        if not giveaway and interaction.message:
+            giveaway = await db.get_giveaway_by_message(interaction.message.id)
+
         if not giveaway:
             return await interaction.response.send_message("❌ 找不到此抽獎，可能已被刪除。", ephemeral=True)
 
+        if giveaway.get("ended"):
+            return await interaction.response.send_message("❌ 此抽獎已經結束囉！", ephemeral=True)
+
+        giveaway_id = giveaway["id"]
         member = interaction.user
         guild = interaction.guild
 
@@ -123,7 +133,7 @@ class GiveawayJoinButton(discord.ui.View):
                 )
 
         # ── 2. 加入抽獎 ────────────────────────────────────────
-        result = await db.add_giveaway_entry(self.giveaway_id, member.id)
+        result = await db.add_giveaway_entry(giveaway_id, member.id)
 
         if result:
             await interaction.response.send_message(
@@ -132,7 +142,7 @@ class GiveawayJoinButton(discord.ui.View):
             )
 
             # 更新 Embed 中的參加人數
-            giveaway = await db.get_giveaway(self.giveaway_id)
+            giveaway = await db.get_giveaway(giveaway_id)
             if giveaway:
                 entries = json.loads(giveaway["entries"])
                 host = guild.get_member(giveaway["host_id"])
@@ -175,6 +185,10 @@ class Giveaway(commands.GroupCog, name="giveaway", description="🎁 伺服器�
         self.db = bot.db
         self.check_giveaways.start()
         self.check_scheduled_giveaways.start()
+
+    async def cog_load(self):
+        # 註冊持久化按鈕 (重啟後繼續可用)
+        self.bot.add_view(GiveawayJoinButton())
 
     def cog_unload(self):
         self.check_giveaways.cancel()

@@ -460,6 +460,13 @@ class ProBot(commands.Bot):
         except Exception as e:
             print(f"[Appeal] 無法註冊永久 View: {e}")
 
+        # 註冊抽獎永久 View
+        try:
+            from cogs.giveaway import GiveawayJoinButton
+            self.add_view(GiveawayJoinButton())
+        except Exception as e:
+            print(f"[Giveaway] 無法註冊永久 View: {e}")
+
         # 檢查是否有重啟標記，若有則在「顯示伺服器目前變動」頻道發送成功重啟通知 (若未關閉通知)
         RESTART_FLAG_FILE = os.path.join(os.path.dirname(__file__), "data", "restart_flag.json")
         if os.path.exists(RESTART_FLAG_FILE):
