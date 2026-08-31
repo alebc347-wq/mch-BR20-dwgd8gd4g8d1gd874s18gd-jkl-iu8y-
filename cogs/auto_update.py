@@ -407,6 +407,96 @@ class AutoUpdate(commands.Cog):
         await self.bot.close()
         return True
 
+    @commands.command(name="pack", aliases=["更新包", "buildpack"])
+    async def pack_command(self, ctx: commands.Context):
+        """生成並發送緊急超輕量更新包 (.pack)"""
+        try:
+            from build_update_pack import build_pack
+            zip_path = build_pack()
+            size_kb = os.path.getsize(zip_path) / 1024
+            file = discord.File(zip_path, filename="update_pack.zip")
+            embed = discord.Embed(
+                title="📦 緊急超輕量更新包 (Update Pack)",
+                description=(
+                    f"✅ **更新包生成成功！** (大小：`{size_kb:.2f} KB`)\n\n"
+                    "**手動救援安裝步驟：**\n"
+                    "1. 下載此 `update_pack.zip`。\n"
+                    "2. 前往 **Wispbyte 控制台** -> **檔案管理器 (Files)**。\n"
+                    "3. 將 `update_pack.zip` 直接拖曳上傳至根目錄 `/home/container/`。\n"
+                    "4. 在 Wispbyte 面板點擊該檔案右側選單 -> **Unarchive (解壓縮)** 覆蓋檔案。\n"
+                    "5. 重啟機器人即可完成升級！\n\n"
+                    "*(若機器人在線，亦可發送 `.apply` 附帶此 zip 自動完成解壓重啟)*"
+                ),
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed, file=file)
+        except Exception as e:
+            await ctx.send(f"❌ 生成更新包失敗: `{e}`")
+
+    @sync_group.command(name="pack")
+    async def sync_pack(self, ctx: commands.Context):
+        """生成並發送緊急超輕量更新包"""
+        await self.pack_command(ctx)
+
+    @commands.command(name="apply", aliases=["套用", "applypack"])
+    async def apply_command(self, ctx: commands.Context):
+        """從附件或根目錄套用 update_pack.zip 並熱重啟 (.apply)"""
+        zip_bytes = None
+        # 1. 檢查訊息是否有附件
+        if ctx.message.attachments:
+            att = ctx.message.attachments[0]
+            if att.filename.endswith(".zip"):
+                zip_bytes = await att.read()
+        
+        # 2. 若無附件，檢查本地是否有 update_pack.zip
+        zip_path = "update_pack.zip"
+        if not zip_bytes and os.path.exists(zip_path):
+            try:
+                with open(zip_path, "rb") as f:
+                    zip_bytes = f.read()
+            except Exception:
+                pass
+
+        if not zip_bytes:
+            return await ctx.send("❌ 未找到更新包！請上傳 `.zip` 附件並輸入 `.apply`，或先將 `update_pack.zip` 放置於根目錄。")
+
+        msg = await ctx.send("📦 正在解壓縮更新包並覆蓋程式碼...")
+        try:
+            await self.run_cleanup()
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                for member in z.infolist():
+                    parts = member.filename.split('/')
+                    if not parts or not parts[0]:
+                        continue
+                    target_path = os.path.join(*parts)
+                    if target_path.startswith((".env", "data/", "data\\")):
+                        continue
+                    if member.is_dir() or member.filename.endswith('/'):
+                        os.makedirs(target_path, exist_ok=True)
+                    else:
+                        dir_name = os.path.dirname(target_path)
+                        if dir_name:
+                            os.makedirs(dir_name, exist_ok=True)
+                        if os.path.exists(target_path):
+                            try:
+                                os.remove(target_path)
+                            except Exception:
+                                pass
+                        with open(target_path, "wb") as f:
+                            f.write(z.read(member))
+
+            await msg.edit(content="✅ 更新包套用成功！正在執行熱重啟 (execv)...")
+            self.bot.is_restarting = True
+            self.bot.exit_code = 1
+            await self.bot.close()
+        except Exception as e:
+            await msg.edit(content=f"❌ 套用更新包失敗: `{e}`")
+
+    @sync_group.command(name="apply")
+    async def sync_apply(self, ctx: commands.Context):
+        """套用更新包"""
+        await self.apply_command(ctx)
+
     @commands.command(name="clean", aliases=["清理", "diskclean"])
     async def clean_command(self, ctx: commands.Context):
         """立即深度清理磁碟暫存與釋放空間 (.clean)"""
