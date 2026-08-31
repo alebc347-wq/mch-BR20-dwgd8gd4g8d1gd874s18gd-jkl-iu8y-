@@ -147,13 +147,13 @@ class AutoUpdate(commands.Cog):
         await ctx.send(embed=embed)
 
     async def run_cleanup(self) -> str:
-        """更新前自動清理磁碟空間：刪除 __pycache__、暫存 JSON/TXT、data/ 媒體、SQLite VACUUM"""
+        """更新前深度清理磁碟空間：刪除 __pycache__、暫存檔、pip 快取、SQLite WAL 與暫存媒體"""
         import shutil
+        import tempfile
         freed = 0
 
         # 1. 刪除所有 __pycache__ 目錄與殘留 .pyc/.pyo 檔案
         for root, dirs, files in os.walk(".", topdown=False):
-            # 跳過 .git 目錄
             dirs[:] = [d for d in dirs if d != ".git"]
             for d in dirs:
                 if d == "__pycache__":
@@ -169,7 +169,7 @@ class AutoUpdate(commands.Cog):
                     except Exception:
                         pass
             for fname in files:
-                if fname.endswith((".pyc", ".pyo")):
+                if fname.endswith((".pyc", ".pyo", ".tmp", ".log", ".bak")):
                     fpath = os.path.join(root, fname)
                     try:
                         freed += os.path.getsize(fpath)
@@ -177,11 +177,14 @@ class AutoUpdate(commands.Cog):
                     except Exception:
                         pass
 
-        # 2. 刪除 data/ 內的暫存媒體 (TTS mp3/wav、version png 等)
-        temp_exts = {".mp3", ".wav", ".png"}
+        # 2. 刪除 data/ 內的暫存媒體 (TTS mp3/wav、截圖 png、日誌 log)
+        temp_exts = {".mp3", ".wav", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".log", ".tmp", ".bak"}
         data_dir = "data"
         if os.path.isdir(data_dir):
             for fname in os.listdir(data_dir):
+                # 保留重要設定 JSON
+                if fname.endswith((".json", ".db")):
+                    continue
                 fpath = os.path.join(data_dir, fname)
                 if os.path.isfile(fpath) and os.path.splitext(fname)[1].lower() in temp_exts:
                     try:
@@ -190,86 +193,117 @@ class AutoUpdate(commands.Cog):
                     except Exception:
                         pass
 
-        # 3. 刪除根目錄的暫存 scratch 大型檔案
-        scratch_patterns = [
-            "scratch_header.json", "scratch_results.json",
-            "scratch_voices.txt", "invidious_results.json",
-            "patch_fix.txt",
-        ]
-        for fname in scratch_patterns:
-            if os.path.isfile(fname):
-                try:
-                    freed += os.path.getsize(fname)
-                    os.remove(fname)
-                except Exception:
-                    pass
+        # 3. 刪除 pip 快取目錄 (~/.cache/pip)
+        pip_cache = os.path.expanduser("~/.cache")
+        if os.path.isdir(pip_cache):
+            try:
+                for r, _, fs in os.walk(pip_cache):
+                    for f in fs:
+                        freed += os.path.getsize(os.path.join(r, f))
+                shutil.rmtree(pip_cache, ignore_errors=True)
+            except Exception:
+                pass
 
-        # 4. 刪除根目錄非 assets 的大型 PNG/JPG（例如 ChatGPT 截圖）
-        img_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-        for fname in os.listdir("."):
-            if os.path.isfile(fname) and os.path.splitext(fname)[1].lower() in img_exts:
-                try:
-                    freed += os.path.getsize(fname)
-                    os.remove(fname)
-                except Exception:
-                    pass
+        # 4. 刪除系統暫存目錄中的臨時檔案 (/tmp)
+        tmp_dir = tempfile.gettempdir()
+        if os.path.isdir(tmp_dir) and tmp_dir != "/":
+            try:
+                for f in os.listdir(tmp_dir):
+                    if f.startswith(("tmp", "pip-", "discord-")):
+                        fp = os.path.join(tmp_dir, f)
+                        if os.path.isfile(fp):
+                            freed += os.path.getsize(fp)
+                            os.remove(fp)
+                        elif os.path.isdir(fp):
+                            shutil.rmtree(fp, ignore_errors=True)
+            except Exception:
+                pass
 
-        # 5. 刪除 scratch/ 暫存腳本目錄（若存在）
+        # 5. 刪除 scratch/ 與暫存日誌檔案
         if os.path.isdir("scratch"):
             try:
-                freed += sum(
-                    os.path.getsize(os.path.join(r, f))
-                    for r, _, fs in os.walk("scratch") for f in fs
-                )
                 shutil.rmtree("scratch", ignore_errors=True)
             except Exception:
                 pass
 
-        # 6. SQLite VACUUM 壓縮資料庫
+        # 6. SQLite 釋放空間與檢查點 (使用 TRUNCATE 與 checkpoint，避免 VACUUM 雙重佔用磁碟)
         try:
             db = self.bot.db.db
-            await db.execute("VACUUM;")
+            if db:
+                await db.execute("PRAGMA journal_mode = TRUNCATE;")
+                await db.execute("PRAGMA temp_store = MEMORY;")
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                await db.execute("PRAGMA incremental_vacuum;")
         except Exception:
             pass
+
+        # 7. 清理殘留的 db-wal / db-shm 實體檔案
+        for wal_file in [os.path.join("data", "bot.db-wal"), os.path.join("data", "bot.db-shm")]:
+            if os.path.exists(wal_file):
+                try:
+                    freed += os.path.getsize(wal_file)
+                    os.remove(wal_file)
+                except Exception:
+                    pass
 
         freed_kb = freed // 1024
         freed_mb = freed_kb / 1024
         size_str = f"{freed_mb:.1f} MB" if freed_mb >= 1 else f"{freed_kb} KB"
-        return f"🧹 預清理完成！已釋放約 **{size_str}** 磁碟空間。"
+        return f"🧹 深度磁碟清理完成！已釋放約 **{size_str}** 磁碟空間。"
 
     async def run_update_process(self, update_status_func) -> bool:
-        """核心更新與重啟流程：先清理磁碟 → git pull → (Zip 備援)"""
+        """核心更新與重啟流程：先清理磁碟 → git fetch & reset → (Zip 備援)"""
         await update_status_func("🚀 正在啟動升級更新流程...")
 
         # Step 0: 更新前自動清理磁碟
-        await update_status_func("🧹 Step 0/3: 正在清理磁碟暫存空間...")
+        await update_status_func("🧹 Step 0/3: 正在深度清理磁碟暫存空間...")
         cleanup_result = await self.run_cleanup()
         await update_status_func(cleanup_result)
 
-        # Step 1: 優先嘗試 git pull (不需要額外磁碟空間)
+        # Step 1: 優先嘗試 Git 增量同步 (使用 fetch + reset --hard，零額外磁碟開銷且不衝突)
         git_success = False
         git_err_str = ""
-        try:
-            await update_status_func("🔄 Step 1/3: 嘗試使用 `git pull` 高效增量同步...")
-            proc = await asyncio.create_subprocess_exec(
-                "git", "pull", "origin", self.branch,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
-            out_str = stdout.decode("utf-8", errors="ignore").strip()
-            git_err_str = stderr.decode("utf-8", errors="ignore").strip()
+        if os.path.isdir(".git"):
+            try:
+                await update_status_func("🔄 Step 1/3: 嘗試使用 Git 高效增量同步 (`fetch` + `reset --hard`)...")
+                # 1. Fetch 最新 Commit
+                proc_fetch = await asyncio.create_subprocess_exec(
+                    "git", "fetch", "--depth", "1", "origin", self.branch,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout_f, stderr_f = await proc_fetch.communicate()
 
-            if proc.returncode == 0:
-                git_success = True
-                await update_status_func(f"✅ `git pull` 同步成功！\n```\n{out_str or 'Already up to date.'}\n```")
-            else:
-                await update_status_func(f"⚠️ `git pull` 回傳錯誤碼 {proc.returncode}，嘗試 Zip 備援...\n```\n{git_err_str}\n```")
-        except Exception as e:
-            git_err_str = str(e)
-            await update_status_func(f"⚠️ `git pull` 指令不可用: `{e}`，切換至 Zip 備援模式...")
+                # 2. 強制 Reset 至最新遠端 Commit (自動捨棄本地覆蓋檔案)
+                proc_reset = await asyncio.create_subprocess_exec(
+                    "git", "reset", "--hard", f"origin/{self.branch}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout_r, stderr_r = await proc_reset.communicate()
+                out_str = stdout_r.decode("utf-8", errors="ignore").strip()
 
-        # Step 2: Zip 備援模式 (git pull 失敗時才啟動)
+                # 3. 清理未追蹤的垃圾檔案
+                proc_clean = await asyncio.create_subprocess_exec(
+                    "git", "clean", "-fd",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await proc_clean.communicate()
+
+                if proc_reset.returncode == 0:
+                    git_success = True
+                    await update_status_func(f"✅ Git 增量同步成功！\n```\n{out_str or 'HEAD 已更新至最新版本'}\n```")
+                else:
+                    git_err_str = stderr_r.decode("utf-8", errors="ignore").strip()
+                    await update_status_func(f"⚠️ Git reset 失敗 ({proc_reset.returncode})，嘗試 Zip 備援...\n```\n{git_err_str}\n```")
+            except Exception as e:
+                git_err_str = str(e)
+                await update_status_func(f"⚠️ Git 指令不可用: `{e}`，切換至 Zip 備援模式...")
+        else:
+            await update_status_func("ℹ️ 容器環境未偵測到 `.git`，使用 GitHub API Zip 模式同步...")
+
+        # Step 2: Zip 備援模式 (git pull 失敗或未包含 .git 時才啟動)
         if not git_success:
             if not self.repo:
                 await update_status_func("❌ 錯誤：未在 `.env` 中設定 `GITHUB_REPO`。")
@@ -295,10 +329,9 @@ class AutoUpdate(commands.Cog):
                             return False
                         zip_data = await response.read()
 
-                # Zip 解壓縮前再清理一次，確保空間充足
-                await update_status_func("🧹 再次清理磁碟以確保解壓空間充足...")
+                # Zip 解壓縮前再次清理以保證空間
                 await self.run_cleanup()
-                await update_status_func("📦 Zip 下載完成，正在解壓縮並覆蓋程式碼...")
+                await update_status_func("📦 Zip 下載完成，正在解壓縮並安全覆蓋程式碼...")
 
                 with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
                     for member in z.infolist():
@@ -309,20 +342,31 @@ class AutoUpdate(commands.Cog):
                             if not clean_parts:
                                 continue
                             target_path = os.path.join(*clean_parts)
+                            
+                            # 忽略不必要的檔案以保護使用者設定與節省磁碟空間
                             if (
                                 target_path.startswith(".env") or
                                 target_path.startswith(".git") or
                                 target_path.startswith("data/") or
                                 target_path.startswith("data\\") or
+                                target_path.startswith("tests/") or
+                                target_path.endswith((".md", ".txt", ".png", ".jpg", ".webp")) or
                                 target_path == "deploy_config.json"
                             ):
                                 continue
+
                             if is_dir:
                                 os.makedirs(target_path, exist_ok=True)
                             else:
                                 dir_name = os.path.dirname(target_path)
                                 if dir_name:
                                     os.makedirs(dir_name, exist_ok=True)
+                                # 刪除舊檔案再寫入，防止暫存雙倍佔用
+                                if os.path.exists(target_path):
+                                    try:
+                                        os.remove(target_path)
+                                    except Exception:
+                                        pass
                                 with open(target_path, "wb") as f:
                                     f.write(z.read(member))
 
@@ -330,7 +374,6 @@ class AutoUpdate(commands.Cog):
             except OSError as e:
                 if getattr(e, 'errno', None) == 28 or "No space left" in str(e):
                     server_id = os.getenv("SERVER_ID", "未知")
-                    # 根據 SERVER_ID 判斷機器名稱
                     server_name_map = {
                         "wispbyte-1": "**1 號機 (wispbyte-1)**",
                         "wispbyte-2": "**2 號機 (wispbyte-2)**",
@@ -339,12 +382,7 @@ class AutoUpdate(commands.Cog):
                     await update_status_func(
                         f"❌ **磁碟空間不足 ([Errno 28] No space left on device)**\n"
                         f"🖥️ **發生機器：{server_label}**\n\n"
-                        f"預清理後仍然空間不足，請至 **Wispbyte 控制台** 找到 {server_label} 的容器，手動刪除以下目錄：\n"
-                        "• `/home/container/__pycache__/`\n"
-                        "• `/home/container/cogs/__pycache__/`\n"
-                        "• `/home/container/utils/__pycache__/`\n"
-                        "• `/home/container/data/*.mp3`\n\n"
-                        "清理後重新執行 `.sync run` 即可！"
+                        f"已為您執行深度磁碟釋放。請在控制台重啟機器人或再次輸入 `.clean` 進行空間回收。"
                     )
                 else:
                     await update_status_func(f"❌ Zip 更新失敗: `{e}`")
@@ -352,7 +390,6 @@ class AutoUpdate(commands.Cog):
             except Exception as e:
                 await update_status_func(f"❌ Zip 更新失敗: `{e}`")
                 return False
-
 
         # 熱重啟流程
         await update_status_func("🔄 正在啟動系統熱重啟流程 (execv)...")
@@ -369,6 +406,19 @@ class AutoUpdate(commands.Cog):
         self.bot.exit_code = 1
         await self.bot.close()
         return True
+
+    @commands.command(name="clean", aliases=["清理", "diskclean"])
+    async def clean_command(self, ctx: commands.Context):
+        """立即深度清理磁碟暫存與釋放空間 (.clean)"""
+        server_id = os.getenv("SERVER_ID", "local")
+        msg = await ctx.send(f"🧹 **[{server_id}]** 正在執行深度磁碟空間清理...")
+        report = await self.run_cleanup()
+        await msg.edit(content=f"**[{server_id}]** {report}")
+
+    @sync_group.command(name="clean")
+    async def sync_clean(self, ctx: commands.Context):
+        """執行磁碟深度清理"""
+        await self.clean_command(ctx)
 
     @sync_group.command(name="run")
     async def sync_run(self, ctx: commands.Context):

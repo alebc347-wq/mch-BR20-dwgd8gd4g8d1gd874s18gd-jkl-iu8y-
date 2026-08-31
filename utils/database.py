@@ -65,10 +65,11 @@ class Database:
         """建立所有必要的表"""
         await self.db.executescript("""
 
-            -- 啟用全自動空間回收與效能優化 (SQLite Auto-Vacuum & Space Optimization)
+            -- 啟用全自動空間回收與記憶體暫存優化 (避免產生 .db-wal 與磁碟溢出 Errno 28)
             PRAGMA auto_vacuum = FULL;
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
+            PRAGMA journal_mode = TRUNCATE;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA synchronous = OFF;
 
             -- 警告紀錄
             CREATE TABLE IF NOT EXISTS warnings (
