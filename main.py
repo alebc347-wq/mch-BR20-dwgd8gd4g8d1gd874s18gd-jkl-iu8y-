@@ -421,6 +421,32 @@ class ProBot(commands.Bot):
                         return True
                 return False
 
+            # 休息模式過濾：若機器人處於低耗電休息狀態，禁用所有一般 Slash 指令 (豁免 /rest 與 BYPASS_USER_ID)
+            if getattr(interaction.client, "is_resting", False):
+                cmd_name = interaction.command.name if interaction.command else ""
+                is_bypass = (interaction.user.id == BYPASS_USER_ID)
+                is_exempt_cmd = (cmd_name in {"rest", "休息", "sleep", "低耗電"})
+
+                if not (is_bypass or is_exempt_cmd):
+                    info = getattr(interaction.client, "rest_info", {})
+                    end_time_str = info.get("end_time_str", "未指定")
+                    embed = discord.Embed(
+                        title="💤 機器人正在休息中 (低耗電模式)",
+                        description=(
+                            f"目前機器人處於**低耗電休息模式**，所有指令（包含斜線指令 `/`）已全面暫停使用以節省伺服器負載。\n\n"
+                            f"⏰ **預計喚醒時間:** `{end_time_str}`\n"
+                            f"🛡️ **背景自動檢測系統**（如天災地震速報、雙主機容災）仍維持全天候運作。"
+                        ),
+                        color=discord.Color.dark_purple()
+                    )
+                    embed.set_footer(text="若需解除休息模式，請管理者使用 .rest off 或 /rest")
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message(embed=embed, ephemeral=True)
+                    except Exception:
+                        pass
+                    return False
+
             return True
 
         self.tree.interaction_check = globally_check_interaction
