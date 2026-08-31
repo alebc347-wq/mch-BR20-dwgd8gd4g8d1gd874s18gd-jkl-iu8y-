@@ -130,7 +130,8 @@ class HelpSelectMenu(discord.ui.Select):
                     "`/avatar [@用戶]` — 顯示頭像\n"
                     "`/about` — 關於機器人\n"
                     "`/invite` — 邀請連結\n"
-                    "`/uptime` — 運行時間"
+                    "`/uptime` — 運行時間\n"
+                    "`.rest [時間/起訖/off]` `/rest` — 🌙 低耗電休息模式"
                 ),
                 color=Colors.PRIMARY,
             ),

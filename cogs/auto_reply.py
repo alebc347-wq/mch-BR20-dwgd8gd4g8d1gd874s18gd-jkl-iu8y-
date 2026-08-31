@@ -194,8 +194,11 @@ class AutoReply(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # 忽略機器人自己 and DM
+        # 忽略機器人自己、DM 以及休息模式 (低耗電靜默)
         if message.author.bot or not message.guild:
+            return
+
+        if getattr(self.bot, "is_resting", False):
             return
 
         content = message.content.strip()

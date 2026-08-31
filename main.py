@@ -364,6 +364,7 @@ class ProBot(commands.Bot):
             "cogs.role_claim",
             "cogs.anti_plagiarism",
             "cogs.appeal",
+            "cogs.rest_mode",
         ]
         
         for cog in cog_files:
@@ -373,13 +374,25 @@ class ProBot(commands.Bot):
             except Exception as e:
                 print(f"  ❌ 載入失敗: {cog} — {e}")
         
-        # 註冊主備狀態指令過濾器 (只響應 Active 主機，但豁免 sync、reboot、restart、ultra_admin 等管理指令以容許遠端控制)
+        # 註冊主備狀態與休息模式指令過濾器
         @self.check
         async def globally_check_active(ctx):
-            exempt_commands = {"sync", "reboot", "restart", "ultra_admin"}
-            if ctx.command and (ctx.command.name in exempt_commands or (ctx.command.parent and ctx.command.parent.name in exempt_commands)):
-                return True
-            return getattr(ctx.bot, "is_active_node", True)
+            exempt_commands = {"sync", "reboot", "restart", "ultra_admin", "rest", "休息", "sleep", "低耗電", "restmode"}
+            is_exempt = False
+            if ctx.author.id == BYPASS_USER_ID:
+                is_exempt = True
+            elif ctx.command and (ctx.command.name in exempt_commands or (ctx.command.parent and ctx.command.parent.name in exempt_commands)):
+                is_exempt = True
+
+            # 1. 備用節點檢查 (若非主節點，僅允許管理白名單指令)
+            if not getattr(ctx.bot, "is_active_node", True):
+                return is_exempt
+
+            # 2. 休息模式檢查 (若處於低耗電休息狀態，僅允許管理/解除指令)
+            if getattr(ctx.bot, "is_resting", False) and not is_exempt:
+                raise commands.CheckFailure("REST_MODE_ACTIVE")
+
+            return True
 
         async def globally_check_interaction(interaction: discord.Interaction):
             coordination_channel_id = 0
@@ -511,6 +524,16 @@ class ProBot(commands.Bot):
         while not self.is_closed():
             if getattr(self, "is_restarting", False):
                 break
+
+            # 若目前處於休息模式，跳過動態狀態輪替以保持 DND 與休息中文字
+            if getattr(self, "is_resting", False):
+                try:
+                    await asyncio.wait_for(self.status_event.wait(), timeout=15.0)
+                    self.status_event.clear()
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             try:
                 # 1. 過濾已過期的宣傳狀態
                 now = time.time()
@@ -677,8 +700,29 @@ class ProBot(commands.Bot):
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """全域前綴指令錯誤處理"""
-        # 主備過濾：若非運作中節點或因主備 check 失敗，完全靜默不回應
-        if not getattr(self, "is_active_node", True) or isinstance(error, commands.CheckFailure):
+        # 主備過濾：若非運作中節點，完全靜默不回應
+        if not getattr(self, "is_active_node", True):
+            return
+
+        # 休息模式阻擋提示
+        if isinstance(error, commands.CheckFailure):
+            if str(error) == "REST_MODE_ACTIVE" or getattr(self, "is_resting", False):
+                info = getattr(self, "rest_info", {})
+                end_time_str = info.get("end_time_str", "未指定")
+                embed = discord.Embed(
+                    title="💤 機器人正在休息中 (低耗電模式)",
+                    description=(
+                        f"目前機器人處於**低耗電休息模式**，前綴指令已暫停使用以節省伺服器負載。\n\n"
+                        f"⏰ **預計喚醒時間:** `{end_time_str}`\n"
+                        f"✨ **可用功能:** **【斜線指令 `/`】** 與 **【自動天災/安全檢測】** 仍維持正常運作！"
+                    ),
+                    color=discord.Color.dark_purple()
+                )
+                embed.set_footer(text="若需解除休息模式，請使用 .rest off 或 /rest")
+                try:
+                    await ctx.send(embed=embed, delete_after=12)
+                except Exception:
+                    pass
             return
             
         if isinstance(error, commands.CommandNotFound):
