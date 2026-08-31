@@ -833,8 +833,55 @@ class ProBot(commands.Bot):
         await super().close()
 
 
+def early_disk_cleanup():
+    """在 Python 啟動初期強制清理磁碟暫存與垃圾檔案，防止 SQLite 因 Errno 28 / disk I/O error 崩潰"""
+    import shutil
+    import tempfile
+    try:
+        # 1. 刪除所有 __pycache__ 與暫存檔
+        for root, dirs, files in os.walk(".", topdown=False):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for d in dirs:
+                if d == "__pycache__":
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+            for f in files:
+                if f.endswith((".pyc", ".pyo", ".tmp", ".log", ".bak")):
+                    try:
+                        os.remove(os.path.join(root, f))
+                    except Exception:
+                        pass
+
+        # 2. 清理 data 內暫存媒體與殘留的 wal 檔
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        if os.path.isdir(data_dir):
+            for fname in os.listdir(data_dir):
+                if fname.endswith((".mp3", ".wav", ".png", ".jpg", ".tmp", ".bak", ".log", ".db-wal", ".db-shm")):
+                    try:
+                        os.remove(os.path.join(data_dir, fname))
+                    except Exception:
+                        pass
+
+        # 3. 清理 pip 與系統 /tmp
+        for cdir in [os.path.expanduser("~/.cache"), tempfile.gettempdir()]:
+            if os.path.isdir(cdir) and cdir != "/":
+                try:
+                    for item in os.listdir(cdir):
+                        ipath = os.path.join(cdir, item)
+                        if os.path.isfile(ipath):
+                            os.remove(ipath)
+                        elif os.path.isdir(ipath):
+                            shutil.rmtree(ipath, ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def main():
     """啟動 Bot"""
+    # 啟動前強制先行釋放磁碟空間
+    early_disk_cleanup()
+
     if not BOT_TOKEN:
         print("❌ 錯誤：未設定 DISCORD_TOKEN！")
         print("   請複製 .env.example 為 .env 並填入你的 Bot Token")

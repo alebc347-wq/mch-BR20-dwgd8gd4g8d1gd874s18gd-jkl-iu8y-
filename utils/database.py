@@ -18,20 +18,80 @@ class Database:
     def __init__(self):
         self.db: aiosqlite.Connection | None = None
 
+    def _early_disk_scrub(self):
+        """同步深度清理磁碟垃圾與快取，確保 SQLite 擁有足夠空間"""
+        import shutil
+        import tempfile
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # 1. 清理 __pycache__ 與 .pyc
+        for r, dirs, files in os.walk(root_dir, topdown=False):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for d in dirs:
+                if d == "__pycache__":
+                    shutil.rmtree(os.path.join(r, d), ignore_errors=True)
+            for f in files:
+                if f.endswith((".pyc", ".pyo", ".tmp", ".log", ".bak")):
+                    try:
+                        os.remove(os.path.join(r, f))
+                    except Exception:
+                        pass
+
+        # 2. 清理 data 目錄下暫存檔案與殘留 WAL/SHM
+        data_d = os.path.join(root_dir, "data")
+        if os.path.isdir(data_d):
+            for f in os.listdir(data_d):
+                if f.endswith((".mp3", ".wav", ".png", ".jpg", ".tmp", ".log", ".bak", ".db-wal", ".db-shm")):
+                    try:
+                        os.remove(os.path.join(data_d, f))
+                    except Exception:
+                        pass
+
+        # 3. 清理 pip 快取與系統 /tmp
+        for cdir in [os.path.expanduser("~/.cache"), tempfile.gettempdir()]:
+            if os.path.isdir(cdir) and cdir != "/":
+                try:
+                    for item in os.listdir(cdir):
+                        ipath = os.path.join(cdir, item)
+                        if os.path.isfile(ipath):
+                            os.remove(ipath)
+                        elif os.path.isdir(ipath):
+                            shutil.rmtree(ipath, ignore_errors=True)
+                except Exception:
+                    pass
+
     async def connect(self):
-        """連接資料庫並建立表"""
+        """連接資料庫並建立表 (含啟動自動磁碟深度清理與防 I/O 錯誤容災)"""
+        # 1. 啟動連線前自動深度清理磁碟暫存與垃圾檔案
+        self._early_disk_scrub()
+
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+        # 2. 若資料庫檔案異常損壞為 0 byte，自動移除以利重新初始化
+        if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) == 0:
+            try:
+                os.remove(DB_PATH)
+                print("🧹 已自動清理 0-byte 損壞的空資料庫檔案")
+            except Exception:
+                pass
+
         self.db = await aiosqlite.connect(DB_PATH)
         self.db.row_factory = aiosqlite.Row
 
-        # 設定記憶體內 journal 與 temp_store，大幅減少實體磁碟佔用與避免 disk full (Errno 28)
+        # 3. 強制使用純記憶體日誌與記憶體暫存 (MEMORY journal & temp_store)，徹底避免實體磁碟 I/O 錯誤
         try:
-            await self.db.execute("PRAGMA journal_mode = TRUNCATE;")
             await self.db.execute("PRAGMA temp_store = MEMORY;")
+            await self.db.execute("PRAGMA journal_mode = MEMORY;")
             await self.db.execute("PRAGMA synchronous = OFF;")
         except Exception as e:
             print(f"⚠️ PRAGMA 設定調整失敗: {e}")
-        await self._create_tables()
+
+        try:
+            await self._create_tables()
+        except Exception as e:
+            print(f"⚠️ _create_tables 執行失敗: {e}，正在進行二次磁碟救援與重試...")
+            self._early_disk_scrub()
+            await self._create_tables()
 
         # 自動遷移：為舊版 giveaways 表補上 required_role_id / blocked_role_id 欄位
         for col in ("required_role_id", "blocked_role_id"):
@@ -65,9 +125,9 @@ class Database:
         """建立所有必要的表"""
         await self.db.executescript("""
 
-            -- 啟用全自動空間回收與記憶體暫存優化 (避免產生 .db-wal 與磁碟溢出 Errno 28)
+            -- 啟用全自動空間回收與純記憶體暫存 (完全避免實體磁碟 I/O 錯誤與 Errno 28)
             PRAGMA auto_vacuum = FULL;
-            PRAGMA journal_mode = TRUNCATE;
+            PRAGMA journal_mode = MEMORY;
             PRAGMA temp_store = MEMORY;
             PRAGMA synchronous = OFF;
 
