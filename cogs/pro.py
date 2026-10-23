@@ -121,6 +121,57 @@ class Pro(commands.Cog):
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         return False
 
+    @app_commands.command(name="pro", description="查看或啟用本伺服器的 Pro 專業版狀態")
+    async def pro_status(self, interaction: discord.Interaction):
+        """查看本伺服器的 Pro 狀態與激活面板"""
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ 此指令僅限在伺服器中使用。", ephemeral=True)
+
+        is_pro = await self.bot.db.is_guild_pro(interaction.guild_id)
+        view = ProPromotionView(self, support_url=self.support_url)
+
+        if is_pro:
+            async with self.bot.db.db.execute(
+                "SELECT activated_at, expires_at FROM pro_guilds WHERE guild_id = ?",
+                (interaction.guild_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            exp_text = "永久有效"
+            if row and row["expires_at"]:
+                exp_text = row["expires_at"]
+
+            embed = discord.Embed(
+                title="💎 Pro 專業版 — 啟用中",
+                description=(
+                    f"🎉 本伺服器 (**{interaction.guild.name}**) 已啟用 **Pro 專業版**！\n\n"
+                    f"⏰ **到期時間：** `{exp_text}`\n\n"
+                    f"✨ **已解鎖特權：**\n"
+                    f"• 🟢 24/7 音樂不斷線模式 (`/247`)\n"
+                    f"• 📋 支援大型播放清單解析（無首數限制）\n"
+                    f"• ⚡ 優先音訊串流解碼線路"
+                ),
+                color=0xFFD700
+            )
+            embed.set_footer(text="倉鼠勇者 2.0 • Pro 系統")
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        else:
+            embed = discord.Embed(
+                title="💎 Pro 專業版 — 尚未啟用",
+                description=(
+                    f"本伺服器 (**{interaction.guild.name}**) 目前為**一般免費版本**。\n\n"
+                    f"💎 **Pro 專業版專屬福利：**\n"
+                    f"• 🟢 **24/7 音樂不斷線**：機器人永久留守語音頻道，隨時待命\n"
+                    f"• 📋 **大型歌單解析**：支援播放超過 5 首歌曲的完整播放清單\n"
+                    f"• ⚡ **優先解碼**：享有專屬優先線路與更低的音訊延遲\n\n"
+                    f"若已有激活金鑰，請點擊下方 **「輸入激活碼」**；\n"
+                    f"若欲取得金鑰，請點擊 **「獲取 Pro 金鑰」**。"
+                ),
+                color=Colors.PRIMARY
+            )
+            embed.set_footer(text="倉鼠勇者 2.0 • Pro 系統")
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
     # ─── 管理指令 (僅限 Bot Owner) ─────────────────────────────────────────
 
     @app_commands.command(name="pro_admin", description="管理 Pro 激活金鑰 (僅限 Bot 擁有者)")

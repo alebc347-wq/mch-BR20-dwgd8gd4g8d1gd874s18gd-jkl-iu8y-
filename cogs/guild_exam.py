@@ -770,7 +770,7 @@ class GuildExam(commands.Cog):
         self.bot.add_view(Exam200AuditView(self.bot))
         await self.init_db()
         # 重新加載所有進行中 Ticket 的持久化 View
-        self.bot.loop.create_task(self.reload_active_views())
+        asyncio.create_task(self.reload_active_views())
 
     async def reload_active_views(self):
         """Bot 啟動時，自動從資料庫讀取所有進行中的 Ticket，並重新註冊它們的持久化 View"""

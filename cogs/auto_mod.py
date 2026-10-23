@@ -37,12 +37,12 @@ class AutoMod(commands.Cog):
         settings = await self.db.get_guild_settings(message.guild.id)
         
         # 白名單頻道
-        whitelist_channels = json.loads(settings.get("automod_whitelist_channels", "[]"))
+        whitelist_channels = json.loads(settings.get("automod_whitelist_channels") or "[]")
         if message.channel.id in whitelist_channels:
             return True
         
         # 白名單角色
-        whitelist_roles = json.loads(settings.get("automod_whitelist_roles", "[]"))
+        whitelist_roles = json.loads(settings.get("automod_whitelist_roles") or "[]")
         user_role_ids = [r.id for r in message.author.roles]
         if any(r in whitelist_roles for r in user_role_ids):
             return True
@@ -63,7 +63,7 @@ class AutoMod(commands.Cog):
             return
         
         # 髒話過濾
-        bad_words = json.loads(settings.get("automod_bad_words", "[]"))
+        bad_words = json.loads(settings.get("automod_bad_words") or "[]")
         if bad_words:
             content_lower = message.content.lower()
             for word in bad_words:

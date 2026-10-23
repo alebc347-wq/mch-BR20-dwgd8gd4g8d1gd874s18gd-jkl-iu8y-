@@ -19,25 +19,8 @@ class Database:
         self.db: aiosqlite.Connection | None = None
 
     def _early_disk_scrub(self):
-        """同步深度清理磁碟垃圾與快取，確保 SQLite 擁有足夠空間"""
-        import shutil
-        import tempfile
+        """同步清理 data 目錄下的殘留暫存檔案，防止暫存檔案堆積"""
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-        # 1. 清理 __pycache__ 與 .pyc
-        for r, dirs, files in os.walk(root_dir, topdown=False):
-            dirs[:] = [d for d in dirs if d != ".git"]
-            for d in dirs:
-                if d == "__pycache__":
-                    shutil.rmtree(os.path.join(r, d), ignore_errors=True)
-            for f in files:
-                if f.endswith((".pyc", ".pyo", ".tmp", ".log", ".bak")):
-                    try:
-                        os.remove(os.path.join(r, f))
-                    except Exception:
-                        pass
-
-        # 2. 清理 data 目錄下暫存檔案與殘留 WAL/SHM
         data_d = os.path.join(root_dir, "data")
         if os.path.isdir(data_d):
             for f in os.listdir(data_d):
@@ -46,19 +29,6 @@ class Database:
                         os.remove(os.path.join(data_d, f))
                     except Exception:
                         pass
-
-        # 3. 清理 pip 快取與系統 /tmp
-        for cdir in [os.path.expanduser("~/.cache"), tempfile.gettempdir()]:
-            if os.path.isdir(cdir) and cdir != "/":
-                try:
-                    for item in os.listdir(cdir):
-                        ipath = os.path.join(cdir, item)
-                        if os.path.isfile(ipath):
-                            os.remove(ipath)
-                        elif os.path.isdir(ipath):
-                            shutil.rmtree(ipath, ignore_errors=True)
-                except Exception:
-                    pass
 
     async def connect(self):
         """連接資料庫並建立表 (含啟動自動磁碟深度清理與防 I/O 錯誤容災)"""
@@ -1433,3 +1403,49 @@ class Database:
             except (ValueError, TypeError):
                 result[k] = v
         return result
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 使用者最愛音樂清單
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def add_favorite_song(self, user_id: int, title: str, uri: str, author: str = "未知", duration: int = 0) -> bool:
+        """將歌曲加入使用者的最愛清單"""
+        async with self.db.execute(
+            "SELECT id FROM user_favorites WHERE user_id = ? AND uri = ?", (user_id, uri)
+        ) as cursor:
+            if await cursor.fetchone():
+                return False
+
+        now_str = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "INSERT INTO user_favorites (user_id, title, uri, author, duration, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, title, uri, author, duration, now_str)
+        )
+        await self.db.commit()
+        return True
+
+    async def remove_favorite_song(self, user_id: int, fav_id: int) -> bool:
+        """從使用者的最愛清單移除歌曲"""
+        cursor = await self.db.execute(
+            "DELETE FROM user_favorites WHERE id = ? AND user_id = ?", (fav_id, user_id)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_favorite_songs(self, user_id: int) -> list[dict]:
+        """取得使用者的最愛歌曲列表"""
+        async with self.db.execute(
+            "SELECT id, title, uri, author, duration FROM user_favorites WHERE user_id = ? ORDER BY id DESC",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "uri": row["uri"],
+                    "author": row["author"],
+                    "duration": row["duration"]
+                }
+                for row in rows
+            ]

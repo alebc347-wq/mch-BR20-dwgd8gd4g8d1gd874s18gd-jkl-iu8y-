@@ -50,6 +50,37 @@ def is_node_online(uri: str, password: str = "", timeout: float = 2.5) -> bool:
         return False
     return False
 
+
+async def check_node_online_async(uri: str, password: str = "", timeout: float = 2.5) -> bool:
+    """非同步測試 Lavalink 節點是否連線正常"""
+    try:
+        import aiohttp
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Upgrade': 'websocket',
+            'Connection': 'Upgrade',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+            'Client-Name': 'Wavelink/3.5.2',
+            'User-Id': '123456789'
+        }
+        if password:
+            headers['Authorization'] = password
+
+        target_url = f"{uri.rstrip('/')}/v4/websocket"
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.ws_connect(target_url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as ws:
+                    return True
+            except aiohttp.WSServerHandshakeError as e:
+                if e.status in (101, 401, 403):
+                    return True
+                return False
+            except Exception:
+                return False
+    except Exception:
+        return False
+
 DEFAULT_247_URL = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
 
 
@@ -697,12 +728,6 @@ class MusicDropdown(discord.ui.Select):
             await self.cog.update_controller_message(interaction.guild)
 
         elif val == "loop_toggle":
-            is_pro = await self.cog.bot.db.is_guild_pro(interaction.guild_id)
-            if not is_pro:
-                return await interaction.response.send_message(
-                    embed=EmbedFactory.error("功能限制", "❌ 循環播放功能為 Pro 專業版專屬功能！"),
-                    ephemeral=True
-                )
             if not player:
                 return await interaction.response.send_message("❌ 機器人目前未連線至語音頻道。", ephemeral=True)
             
@@ -1009,8 +1034,10 @@ class AskListenView(discord.ui.View):
 # 主 Music Cog 類別
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class Music(commands.GroupCog, name="music", description="🎵 音樂播放與控制系統"):
+class Music(commands.Cog, name="Music"):
     """音樂系統 — Lavalink (Wavelink v3)"""
+
+    music_group = app_commands.Group(name="music", description="音樂播放與控制系統")
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -1049,97 +1076,37 @@ class Music(commands.GroupCog, name="music", description="🎵 音樂播放與�
                     pass
 
     async def cog_load(self):
-        """Cog 載入時，連接自訂與公共 Lavalink 節點池"""
-        nodes = []
-        
-        # 1. 經社群驗證的高品質公共 Lavalink v4 節點池
-        public_nodes = [
-            wavelink.Node(
-                identifier="AjieDev-Pro",
-                uri="https://lava.ajie.pro:443",
-                password="ajiepro"
-            ),
-            wavelink.Node(
-                identifier="Lavalink-Rocks",
-                uri="https://api.lavalink.rocks:443",
-                password="youshallnotpass"
-            ),
-            wavelink.Node(
-                identifier="Serenetia-SSL",
-                uri="https://lavalinkv4.serenetia.com:443",
-                password="https://seretia.link/discord"
-            ),
-            wavelink.Node(
-                identifier="Ajie-SSL",
-                uri="https://lava-v4.ajie.pw:443",
-                password="ajieping"
-            ),
-            wavelink.Node(
-                identifier="TriniumHost-Nodelink",
-                uri="https://nodelink.triniumhost.com:443",
-                password="free"
-            ),
-            wavelink.Node(
-                identifier="TriniumHost-SSL",
-                uri="https://lavalink-v4.triniumhost.com:443",
-                password="free"
-            ),
-            wavelink.Node(
-                identifier="Jirayu-SSL",
-                uri="https://lavalink.jirayu.net:443",
-                password="youshallnotpass"
-            ),
-            wavelink.Node(
-                identifier="MilloHost-SSL",
-                uri="https://lava-v4.millohost.my.id:443",
-                password="https://discord.gg/mjS5J2K3ep"
-            ),
+        """Cog 載入時，排程等待 Bot 登入完成後連接 Lavalink 節點池"""
+        asyncio.create_task(self._init_lavalink_nodes())
 
-            wavelink.Node(
-                identifier="TriniumHost-Nodelink02",
-                uri="https://nodelink-02.triniumhost.com:443",
-                password="trinium"
-            ),
-            wavelink.Node(
-                identifier="Lava-Rocks-SSL",
-                uri="https://lava.rocks:443",
-                password="youshallnotpass"
-            ),
-            wavelink.Node(
-                identifier="FreeLavalink-SSL",
-                uri="https://freelavalink.com:443",
-                password="youshallnotpass"
-            )
+    async def _init_lavalink_nodes(self):
+        """等待 Bot 登入完成後非同步探測並連接 Lavalink 節點"""
+        await self.bot.wait_until_ready()
+
+        # 4 個已驗證之高品質公共 Lavalink v4 節點
+        candidate_nodes = [
+            ("Serenetia-SSL", "https://lavalinkv4.serenetia.com:443", "https://seretia.link/discord"),
+            ("MilloHost-SSL", "https://lava-v4.millohost.my.id:443", "https://discord.gg/mjS5J2K3ep"),
+            ("Jirayu-SSL", "https://lavalink.jirayu.net:443", "youshallnotpass"),
+            ("TriniumHost-Nodelink", "https://nodelink.triniumhost.com:443", "free"),
         ]
-        
-        # 逐一檢查公共節點是否在線，避免無效節點引發連線報錯
-        for node in public_nodes:
-            if is_node_online(node.uri, password=node.password):
-                nodes.append(node)
-            else:
-                print(f"⚠️ 公共節點 {node.identifier} [{node.uri}] 目前無法連線，已暫時忽略以避免連線失敗訊息洗版。")
 
-        # 2. 如果有配置自訂節點，且不與上述公共節點重複，則加入節點池
         if LAVALINK_HOST:
             scheme = "https" if LAVALINK_PORT == 443 else "http"
             custom_uri = f"{scheme}://{LAVALINK_HOST}:{LAVALINK_PORT}"
-            
-            # 檢查是否已在公共節點池中，避免重複添加
-            is_duplicate = any(node.uri.rstrip('/') == custom_uri.rstrip('/') for node in public_nodes)
-            
-            if not is_duplicate:
-                if is_node_online(custom_uri, password=LAVALINK_PASSWORD):
-                    nodes.append(
-                        wavelink.Node(
-                            identifier="Custom-Config-Node",
-                            uri=custom_uri,
-                            password=LAVALINK_PASSWORD
-                        )
-                    )
-                    print(f"📡 已將設定檔的自訂節點 [{LAVALINK_HOST}:{LAVALINK_PORT}] 加入連線池。")
-                else:
-                    print(f"⚠️ 自訂節點 [{LAVALINK_HOST}:{LAVALINK_PORT}] 目前未啟動或無法連線，已暫時忽略以避免錯誤洗版。")
-        
+            is_dup = any(c[1].rstrip('/') == custom_uri.rstrip('/') for c in candidate_nodes)
+            if not is_dup:
+                candidate_nodes.insert(0, ("Custom-Config-Node", custom_uri, LAVALINK_PASSWORD))
+
+        async def probe(ident, uri, pwd):
+            ok = await check_node_online_async(uri, password=pwd, timeout=2.5)
+            if ok:
+                return wavelink.Node(identifier=ident, uri=uri, password=pwd)
+            return None
+
+        results = await asyncio.gather(*(probe(ident, uri, pwd) for ident, uri, pwd in candidate_nodes), return_exceptions=True)
+        nodes = [r for r in results if isinstance(r, wavelink.Node)]
+
         if nodes:
             try:
                 await wavelink.Pool.connect(nodes=nodes, client=self.bot)
@@ -1220,10 +1187,6 @@ class Music(commands.GroupCog, name="music", description="🎵 音樂播放與�
 
     async def _ensure_voice(self, interaction: discord.Interaction) -> wavelink.Player | None:
         """確保用戶在語音頻道並連接，回傳 wavelink.Player"""
-        pro_cog = self.bot.cogs.get("Pro")
-        if pro_cog and not await pro_cog.check_pro(interaction):
-            return None
-
         if not interaction.user.voice or not interaction.user.voice.channel:
             await self._respond(
                 interaction,
@@ -1482,10 +1445,6 @@ class Music(commands.GroupCog, name="music", description="🎵 音樂播放與�
 
     @app_commands.command(name="music_menu", description="召喚音樂系統 UI 控制面板")
     async def music_menu(self, interaction: discord.Interaction):
-        pro_cog = self.bot.cogs.get("Pro")
-        if pro_cog and not await pro_cog.check_pro(interaction):
-            return
-
         await interaction.response.defer()
         old_msg = self.controllers.get(interaction.guild.id)
         if old_msg:
@@ -1779,9 +1738,6 @@ class Music(commands.GroupCog, name="music", description="🎵 音樂播放與�
         app_commands.Choice(name="佇列循環", value="all"),
     ])
     async def loop_cmd(self, interaction: discord.Interaction, mode: str = "off"):
-        pro_cog = self.bot.cogs.get("Pro")
-        if pro_cog and not await pro_cog.check_pro(interaction):
-            return
         player: wavelink.Player = interaction.guild.voice_client
         if not player:
             return await interaction.response.send_message(

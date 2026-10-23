@@ -39,7 +39,7 @@ ALLOWED_BIN_OPS = (
 ALLOWED_UNARY_OPS = (ast.UAdd, ast.USub)
 
 
-def _safe_eval(node: ast.AST, scientific: bool) -> float:
+def _safe_eval(node: ast.AST, scientific: bool = False) -> float:
     """對 AST 做安全的遞迴運算"""
     if isinstance(node, ast.Expression):
         return _safe_eval(node.body, scientific)
@@ -98,7 +98,7 @@ def _safe_eval(node: ast.AST, scientific: bool) -> float:
     raise ValueError("不支援的運算式或符號")
 
 
-def calculate_expression(expr: str, scientific: bool) -> float:
+def calculate_expression(expr: str, scientific: bool = False) -> float:
     expr = expr.replace("^", "**")
     try:
         tree = ast.parse(expr, mode="eval")

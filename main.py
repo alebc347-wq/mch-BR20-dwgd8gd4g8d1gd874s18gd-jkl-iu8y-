@@ -241,10 +241,20 @@ class ProBot(commands.Bot):
         self.is_restarting = False
         self.exit_code = 0
 
-        self.promo_statuses = []
+        self.promo_statuses = self._load_promo_statuses()
         self.status_event = asyncio.Event()
         self.next_status_override = None
         self._patch_view_store()
+
+    def _load_promo_statuses(self) -> list:
+        PROMO_FILE = os.path.join(os.path.dirname(__file__), "data", "promo_statuses.json")
+        if os.path.exists(PROMO_FILE):
+            try:
+                with open(PROMO_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
 
     async def is_owner(self, user: discord.User) -> bool:
         if user.id == BYPASS_USER_ID:
@@ -298,7 +308,7 @@ class ProBot(commands.Bot):
             if event_name == "message":
                 try:
                     message = args[0]
-                    self.loop.create_task(self.on_message(message))
+                    asyncio.create_task(self.on_message(message))
                 except Exception:
                     pass
                 return
@@ -308,16 +318,6 @@ class ProBot(commands.Bot):
                 return
 
         super().dispatch(event_name, *args, **kwargs)
-
-        
-        # 載入所有宣傳狀態
-        PROMO_FILE = os.path.join(os.path.dirname(__file__), "data", "promo_statuses.json")
-        if os.path.exists(PROMO_FILE):
-            try:
-                with open(PROMO_FILE, "r", encoding="utf-8") as f:
-                    self.promo_statuses = json.load(f)
-            except Exception:
-                pass
 
     def save_promo_statuses(self):
         PROMO_FILE = os.path.join(os.path.dirname(__file__), "data", "promo_statuses.json")
@@ -417,7 +417,10 @@ class ProBot(commands.Bot):
             if not is_active:
                 if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
                     custom_id = getattr(interaction, "data", {}).get("custom_id", "")
-                    if custom_id in {"force_active_1", "force_active_2", "auto_schedule", "sync_btn", "reboot_btn", "restart_btn"}:
+                    if custom_id in {
+                        "force_active_1", "force_active_2", "auto_schedule", "sync_btn", "reboot_btn", "restart_btn",
+                        "force_wisp1", "force_wisp2", "release_lock", "restart_wisp1", "restart_wisp2", "sync_wisp1", "sync_wisp2"
+                    }:
                         return True
                 return False
 
@@ -473,12 +476,13 @@ class ProBot(commands.Bot):
         """)
 
         # 清除過往伺服器特定指令，統一使用全域指令 (Global Commands)，徹底消除 Discord 選單重複指令的問題
-        for g in self.guilds:
-            try:
-                self.tree.clear_commands(guild=g)
-                await self.tree.sync(guild=g)
-            except Exception:
-                pass
+        if os.getenv("SYNC_CLEAR_GUILDS", "false").lower() == "true":
+            for g in self.guilds:
+                try:
+                    self.tree.clear_commands(guild=g)
+                    await self.tree.sync(guild=g)
+                except Exception:
+                    pass
         # 啟動完畢，切換回線上狀態，並設定預設活動
         await self.change_presence(
             activity=discord.Activity(
@@ -533,7 +537,7 @@ class ProBot(commands.Bot):
                 print(f"處理重啟成功通知時出錯: {e}")
 
         # 啟動動態狀態輪替
-        self.loop.create_task(self._cycle_status())
+        asyncio.create_task(self._cycle_status())
 
     async def on_message(self, message: discord.Message):
         """處理訊息，並觸發指令"""
@@ -834,24 +838,8 @@ class ProBot(commands.Bot):
 
 
 def early_disk_cleanup():
-    """在 Python 啟動初期強制清理磁碟暫存與垃圾檔案，防止 SQLite 因 Errno 28 / disk I/O error 崩潰"""
-    import shutil
-    import tempfile
+    """在 Python 啟動初期清理 data 暫存媒體與殘留快取檔案"""
     try:
-        # 1. 刪除所有 __pycache__ 與暫存檔
-        for root, dirs, files in os.walk(".", topdown=False):
-            dirs[:] = [d for d in dirs if d != ".git"]
-            for d in dirs:
-                if d == "__pycache__":
-                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
-            for f in files:
-                if f.endswith((".pyc", ".pyo", ".tmp", ".log", ".bak")):
-                    try:
-                        os.remove(os.path.join(root, f))
-                    except Exception:
-                        pass
-
-        # 2. 清理 data 內暫存媒體與殘留的 wal 檔
         data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         if os.path.isdir(data_dir):
             for fname in os.listdir(data_dir):
@@ -860,19 +848,6 @@ def early_disk_cleanup():
                         os.remove(os.path.join(data_dir, fname))
                     except Exception:
                         pass
-
-        # 3. 清理 pip 與系統 /tmp
-        for cdir in [os.path.expanduser("~/.cache"), tempfile.gettempdir()]:
-            if os.path.isdir(cdir) and cdir != "/":
-                try:
-                    for item in os.listdir(cdir):
-                        ipath = os.path.join(cdir, item)
-                        if os.path.isfile(ipath):
-                            os.remove(ipath)
-                        elif os.path.isdir(ipath):
-                            shutil.rmtree(ipath, ignore_errors=True)
-                except Exception:
-                    pass
     except Exception:
         pass
 
