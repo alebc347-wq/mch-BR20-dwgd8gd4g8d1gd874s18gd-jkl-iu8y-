@@ -195,80 +195,121 @@ class Pro(commands.Cog):
         count: Optional[int] = 1,
         key: Optional[str] = None
     ):
-        # 檢查是否為擁有者
-        if not await self.bot.is_owner(interaction.user):
+        # 檢查是否為擁有者 (支援 Bot Owner 與 bypass user)
+        is_owner = (interaction.user.id == 1437408048934027274)
+        if not is_owner:
+            try:
+                is_owner = await self.bot.is_owner(interaction.user)
+            except Exception:
+                is_owner = False
+
+        if not is_owner:
             return await interaction.response.send_message(
                 embed=EmbedFactory.error("無權限", "只有 Bot 擁有者可以使用此指令。"),
                 ephemeral=True
             )
 
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         db = self.bot.db
-        await interaction.response.defer(ephemeral=True)
+        act = action.value if hasattr(action, "value") else str(action)
+        act = act.strip().lower()
 
-        if action == "generate":
-            # 產生金鑰
-            new_key = f"HERO-PRO-{uuid.uuid4().hex.upper()[:16]}"
-            await db.add_pro_key(new_key, days)
-            
-            embed = discord.Embed(
-                title="✨ 成功產生 Pro 激活碼",
-                description=(
-                    f"🔑 **激活碼：** `{new_key}`\n"
-                    f"📅 **有效天數：** {days} 天\n\n"
-                    f"您現在可以將此金鑰分發給用戶使用。"
-                ),
-                color=Colors.SUCCESS
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        elif action == "batch_generate":
-            # 批量產生金鑰
-            count = max(1, min(count or 1, 50))
-            keys = []
-            for _ in range(count):
+        try:
+            if act in ("generate", "產生金鑰"):
+                # 產生金鑰
                 new_key = f"HERO-PRO-{uuid.uuid4().hex.upper()[:16]}"
-                await db.add_pro_key(new_key, days)
-                keys.append(new_key)
-            
-            keys_str = "\n".join([f"• `{k}`" for k in keys])
-            embed = discord.Embed(
-                title=f"✨ 成功批量產生 {count} 組 Pro 激活碼",
-                description=(
-                    f"📅 **每組有效天數：** {days} 天\n\n"
-                    f"🔑 **激活碼清單：**\n{keys_str}\n\n"
-                    f"您現在可以將這些金鑰分發給用戶使用。"
-                ),
-                color=Colors.SUCCESS
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+                safe_days = max(1, min(days or 30, 365000))
+                await db.add_pro_key(new_key, safe_days)
+                
+                embed = discord.Embed(
+                    title="✨ 成功產生 Pro 激活碼",
+                    description=(
+                        f"🔑 **激活碼：** `{new_key}`\n"
+                        f"📅 **有效天數：** {safe_days} 天\n\n"
+                        f"您現在可以將此金鑰分發給用戶使用。"
+                    ),
+                    color=Colors.SUCCESS
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
-        elif action == "list_unused":
-            unused = await db.get_pro_keys()
-            if not unused:
-                return await interaction.followup.send("目前沒有未使用的金鑰。", ephemeral=True)
-            
-            text = "\n".join([f"• `{r[0]}` ({r[1]} 天) - 建立於: {r[2]}" for r in unused])
-            embed = discord.Embed(
-                title="📋 未使用的 Pro 金鑰列表",
-                description=text,
-                color=Colors.PRIMARY
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            elif act in ("batch_generate", "批量產生金鑰"):
+                # 批量產生金鑰
+                count_val = max(1, min(count or 1, 50))
+                safe_days = max(1, min(days or 30, 365000))
+                keys = []
+                for _ in range(count_val):
+                    new_key = f"HERO-PRO-{uuid.uuid4().hex.upper()[:16]}"
+                    await db.add_pro_key(new_key, safe_days)
+                    keys.append(new_key)
+                
+                keys_str = "\n".join([f"• `{k}`" for k in keys])
+                embed = discord.Embed(
+                    title=f"✨ 成功批量產生 {count_val} 組 Pro 激活碼",
+                    description=(
+                        f"📅 **每組有效天數：** {safe_days} 天\n\n"
+                        f"🔑 **激活碼清單：**\n{keys_str}\n\n"
+                        f"您現在可以將這些金鑰分發給用戶使用。"
+                    ),
+                    color=Colors.SUCCESS
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
-        elif action == "list_used":
-            used = await db.get_used_keys()
-            if not used:
-                return await interaction.followup.send("目前沒有已被使用的金鑰。", ephemeral=True)
-            
-            text = "\n".join([
-                f"• `{r[0]}` - 伺服器: `{r[1]}` (由 {self.bot.get_user(r[2]) or r[2]} 使用) - 使用於: {r[3]}"
-                for r in used
-            ])
-            embed = discord.Embed(
-                title="📋 已使用的 Pro 金鑰歷史",
-                description=text,
-                color=Colors.PRIMARY
-            )
+            elif act in ("list_unused", "列出未使用的金鑰", "list"):
+                unused = await db.get_pro_keys()
+                if not unused:
+                    return await interaction.followup.send("目前沒有未使用的金鑰。", ephemeral=True)
+                
+                lines = []
+                for r in unused:
+                    k = r[0] if isinstance(r, (tuple, list)) else r["key"]
+                    d = r[1] if isinstance(r, (tuple, list)) else r["expires_in_days"]
+                    c = r[2] if isinstance(r, (tuple, list)) else r["created_at"]
+                    created_display = str(c)[:19].replace("T", " ")
+                    lines.append(f"• `{k}` ({d} 天) - 建立於: `{created_display}`")
+
+                text = "\n".join(lines)
+                if len(text) > 3800:
+                    text = text[:3800] + f"\n... 以及更多金鑰 (共 {len(unused)} 組)"
+
+                embed = discord.Embed(
+                    title=f"📋 未使用的 Pro 金鑰列表 (共 {len(unused)} 組)",
+                    description=text,
+                    color=Colors.PRIMARY
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+            elif act in ("list_used", "列出已使用的金鑰"):
+                used = await db.get_used_keys()
+                if not used:
+                    return await interaction.followup.send("目前沒有已被使用的金鑰。", ephemeral=True)
+                
+                lines = []
+                for r in used:
+                    k = r[0] if isinstance(r, (tuple, list)) else r["key"]
+                    g = r[1] if isinstance(r, (tuple, list)) else r["guild_id"]
+                    u = r[2] if isinstance(r, (tuple, list)) else r["user_id"]
+                    t = r[3] if isinstance(r, (tuple, list)) else r["used_at"]
+                    used_display = str(t)[:19].replace("T", " ")
+                    lines.append(f"• `{k}` - 伺服器: `{g}` (由 <@{u}> 使用) - 使用於: `{used_display}`")
+
+                text = "\n".join(lines)
+                if len(text) > 3800:
+                    text = text[:3800] + f"\n... 以及更多記錄 (共 {len(used)} 筆)"
+
+                embed = discord.Embed(
+                    title=f"📋 已使用的 Pro 金鑰歷史 (共 {len(used)} 筆)",
+                    description=text,
+                    color=Colors.PRIMARY
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+            else:
+                await interaction.followup.send(f"❌ 未知的動作：`{act}`", ephemeral=True)
+
+        except Exception as e:
+            embed = EmbedFactory.error("執行失敗", f"執行 `{act}` 發生錯誤：`{e}`")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
 

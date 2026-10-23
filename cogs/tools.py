@@ -246,6 +246,680 @@ class AntiScamView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FakeURLView UI 元件 (發送偽造超連結到頻道)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class FakeURLView(discord.ui.View):
+    def __init__(self, hide_url: str, real_url: str):
+        super().__init__(timeout=180)
+        self.hide_url = hide_url
+        self.real_url = real_url
+
+    @discord.ui.button(label="發送到頻道", style=discord.ButtonStyle.success, emoji="📤", custom_id="fake_url_send")
+    async def send_to_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # interaction and button are passed by discord.py
+        embed = discord.Embed(
+            description=f"🔗 [{self.hide_url}]({self.real_url})",
+            color=Colors.PRIMARY
+        )
+        avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
+        embed.set_author(name=f"{interaction.user.display_name} 分享了一個連結", icon_url=avatar_url)
+        
+        await interaction.channel.send(embed=embed)
+        
+        # 停用按鈕並編輯原訊息以防重複發送
+        self.clear_items()
+        await interaction.response.edit_message(view=self)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SearchView UI 元件 (Google Search 分頁)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class SearchView(discord.ui.View):
+    def __init__(self, query: str, results: list, page: int = 0, per_page: int = 3):
+        super().__init__(timeout=60)
+        self.query = query
+        self.results = results
+        self.page = page
+        self.per_page = per_page
+
+        self.add_item(discord.ui.Button(
+            label="查看更多",
+            url=f"https://www.google.com/search?q={urllib.parse.quote(query)}",
+            style=discord.ButtonStyle.link
+        ))
+        self.add_item(PrevPageButton(query, results, page, per_page))
+        self.add_item(NextPageButton(query, results, page, per_page))
+
+
+class PrevPageButton(discord.ui.Button):
+    def __init__(self, query: str, results: list, page: int, per_page: int):
+        super().__init__(label="⬅️ 上一頁", style=discord.ButtonStyle.secondary)
+        self.query = query
+        self.results = results
+        self.page = page
+        self.per_page = per_page
+        if page <= 0:
+            self.disabled = True
+
+    async def callback(self, interaction: discord.Interaction):
+        start = (self.page - 1) * self.per_page
+        end = start + self.per_page
+        prev_results = self.results[start:end]
+
+        embed = discord.Embed(
+            title=f"🔍 {self.query} 的搜尋結果（第 {self.page} 頁）",
+            color=Colors.PRIMARY
+        )
+
+        for idx, (title, link) in enumerate(prev_results, start=start+1):
+            embed.add_field(name=f"{idx}. {title}", value=link, inline=False)
+
+        view = SearchView(self.query, self.results, self.page - 1, self.per_page)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class NextPageButton(discord.ui.Button):
+    def __init__(self, query: str, results: list, page: int, per_page: int):
+        super().__init__(label="下一頁 ➡️", style=discord.ButtonStyle.primary)
+        self.query = query
+        self.results = results
+        self.page = page
+        self.per_page = per_page
+        if (page + 1) * per_page >= len(results):
+            self.disabled = True
+
+    async def callback(self, interaction: discord.Interaction):
+        start = (self.page + 1) * self.per_page
+        end = start + self.per_page
+        next_results = self.results[start:end]
+
+        embed = discord.Embed(
+            title=f"🔍 {self.query} 的搜尋結果（第 {self.page+2} 頁）",
+            color=Colors.PRIMARY
+        )
+
+        for idx, (title, link) in enumerate(next_results, start=start+1):
+            embed.add_field(name=f"{idx}. {title}", value=link, inline=False)
+
+        view = SearchView(self.query, self.results, self.page + 1, self.per_page)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FontConverter UI 元件 & 轉換對照表
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class FontSelect(discord.ui.Select):
+    def __init__(self, original_text: str, font_maps: dict):
+        options = []
+        for style_id, style_data in font_maps.items():
+            preview = convert_font(original_text, style_id, font_maps)[:80]
+            options.append(discord.SelectOption(
+                label=style_data["name"],
+                value=style_id,
+                description=preview
+            ))
+            
+        super().__init__(
+            placeholder="選擇要複製/發送的字體樣式...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.original_text = original_text
+        self.font_maps = font_maps
+
+    async def callback(self, interaction: discord.Interaction):
+        style_id = self.values[0]
+        styled_text = convert_font(self.original_text, style_id, self.font_maps)
+        style_name = self.font_maps[style_id]["name"]
+        
+        if hasattr(self.view, "selected_style"):
+            self.view.selected_style = style_id
+            
+        embed = discord.Embed(
+            title=f"🔤 字體轉換結果 — {style_name}",
+            description=f"請長按或點選以下內容進行複製：\n\n```\n{styled_text}\n```\n\n**手機直接複製欄位**：\n{styled_text}",
+            color=Colors.PRIMARY
+        )
+        embed.set_footer(text=f"原始輸入：{self.original_text}")
+        
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class FontConverterView(discord.ui.View):
+    def __init__(self, original_text: str, font_maps: dict):
+        super().__init__(timeout=180)
+        self.original_text = original_text
+        self.font_maps = font_maps
+        self.selected_style = list(font_maps.keys())[0]
+        
+        self.select_menu = FontSelect(original_text, font_maps)
+        self.add_item(self.select_menu)
+        
+    @discord.ui.button(label="發送到頻道", style=discord.ButtonStyle.success, emoji="📤", custom_id="font_send_to_channel")
+    async def send_to_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        styled_text = convert_font(self.original_text, self.selected_style, self.font_maps)
+        await interaction.response.send_message(f"✨ {interaction.user.mention} 使用趣味字體說：\n{styled_text}")
+
+
+def _generate_font_maps():
+    def get_math_chars(start_up, start_lo, exceptions=None):
+        if exceptions is None:
+            exceptions = {}
+        up = "".join(chr(exceptions.get(start_up + i, start_up + i)) for i in range(26))
+        lo = "".join(chr(exceptions.get(start_lo + i, start_lo + i)) for i in range(26))
+        return up, lo
+
+    script_exceptions = {
+        0x1D49D: 0x212C, 0x1D4A0: 0x2130, 0x1D4A1: 0x2131, 0x1D4A3: 0x210B,
+        0x1D4A4: 0x2110, 0x1D4A7: 0x2112, 0x1D4A8: 0x2133, 0x1D4AD: 0x211B,
+        0x1D4BB: 0x212F, 0x1D4BD: 0x210A, 0x1D4C5: 0x2134,
+    }
+    frak_exceptions = {
+        0x1D506: 0x212D, 0x1D50B: 0x210C, 0x1D50C: 0x2111, 0x1D515: 0x211C, 0x1D51D: 0x2128,
+    }
+    double_exceptions = {
+        0x1D53A: 0x2102, 0x1D53F: 0x210D, 0x1D545: 0x2115, 0x1D547: 0x2119,
+        0x1D548: 0x211A, 0x1D549: 0x211D, 0x1D551: 0x2124,
+    }
+
+    bold_up, bold_lo = get_math_chars(0x1D400, 0x1D41A)
+    italic_up, italic_lo = get_math_chars(0x1D434, 0x1D44E, {0x1D455: 0x210E})
+    bold_italic_up, bold_italic_lo = get_math_chars(0x1D468, 0x1D482)
+    script_up, script_lo = get_math_chars(0x1D49C, 0x1D4B6, script_exceptions)
+    script_bold_up, script_bold_lo = get_math_chars(0x1D4D0, 0x1D4EA)
+    frak_up, frak_lo = get_math_chars(0x1D504, 0x1D51E, frak_exceptions)
+    frak_bold_up, frak_bold_lo = get_math_chars(0x1D56C, 0x1D586)
+    double_up, double_lo = get_math_chars(0x1D538, 0x1D552, double_exceptions)
+    mono_up, mono_lo = get_math_chars(0x1D670, 0x1D68A)
+    
+    sans_up, sans_lo = get_math_chars(0x1D5A0, 0x1D5BA)
+    sans_bold_up, sans_bold_lo = get_math_chars(0x1D5D4, 0x1D5EE)
+    sans_italic_up, sans_italic_lo = get_math_chars(0x1D608, 0x1D622)
+    sans_bold_italic_up, sans_bold_italic_lo = get_math_chars(0x1D63C, 0x1D656)
+
+    # Standard sets
+    circled_up = "".join(chr(0x24B6 + i) for i in range(26))
+    circled_lo = "".join(chr(0x24D0 + i) for i in range(26))
+    circled_num = "⓪" + "".join(chr(0x2460 + i) for i in range(9))
+
+    circled_black = "".join(chr(0x1F150 + i) for i in range(26))
+    circled_black_num = "⓿" + "".join(chr(0x2776 + i) for i in range(9))
+
+    squared = "".join(chr(0x1F130 + i) for i in range(26))
+    squared_black = "".join(chr(0x1F170 + i) for i in range(26))
+    parenthesized_lo = "".join(chr(0x249C + i) for i in range(26))
+
+    double_num = "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡"
+    bold_num = "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
+    mono_num = "𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿"
+
+    flip_map = {
+        'a': 'ɐ', 'b': 'q', 'c': 'ɔ', 'd': 'p', 'e': 'ǝ', 'f': 'ɟ', 'g': 'ƃ', 'h': 'ɥ', 'i': 'ı', 'j': 'ɾ',
+        'k': 'ʞ', 'l': 'l', 'm': 'ɯ', 'n': 'u', 'o': 'o', 'p': 'd', 'q': 'q', 'r': 'ɹ', 's': 's', 't': 'ʇ',
+        'u': 'n', 'v': 'ʌ', 'w': 'ʍ', 'x': 'x', 'y': 'ʎ', 'z': 'z',
+        'A': '∀', 'B': '𐐒', 'C': 'Ɔ', 'D': '◖', 'E': 'Ǝ', 'F': 'Ⅎ', 'G': '⅁', 'H': 'H', 'I': 'I', 'J': 'ſ',
+        'K': 'ʞ', 'L': '˥', 'M': 'W', 'N': 'N', 'O': 'O', 'P': 'Ԁ', 'Q': '◌', 'R': 'ᵱ', 'S': 'S', 'T': '⊥',
+        'U': '∩', 'V': 'Ʌ', 'W': 'M', 'X': 'X', 'Y': '⅄', 'Z': 'Z',
+        '1': '⇂', '2': 'ᄅ', '3': 'Ɛ', '4': 'ㄣ', '5': 'ϛ', '6': '9', '7': 'ㄥ', '8': '8', '9': '6', '0': '0',
+    }
+
+    zalgo_up = ['\u030d', '\u030e', '\u0304', '\u0305', '\u030f', '\u0311', '\u0306']
+    zalgo_mid = ['\u0315', '\u031b', '\u0340', '\u0341', '\u0358', '\u0321']
+    zalgo_down = ['\u0316', '\u0317', '\u0318', '\u0319', '\u031c', '\u031d', '\u031e']
+
+    return {
+        "fraktur": {"up": frak_up, "lo": frak_lo, "name": "哥德體 (Fraktur)"},
+        "fraktur_bold": {"up": frak_bold_up, "lo": frak_bold_lo, "name": "粗哥德體 (Fraktur Bold)"},
+        "double_struck": {"up": double_up, "lo": double_lo, "num": double_num, "name": "空心體 (Double Struck)"},
+        "script": {"up": script_up, "lo": script_lo, "name": "手寫體 (Script)"},
+        "script_bold": {"up": script_bold_up, "lo": script_bold_lo, "name": "粗手寫體 (Script Bold)"},
+        "bold": {"up": bold_up, "lo": bold_lo, "num": bold_num, "name": "粗體 (Bold)"},
+        "italic": {"up": italic_up, "lo": italic_lo, "name": "斜體 (Italic)"},
+        "bold_italic": {"up": bold_italic_up, "lo": bold_italic_lo, "name": "粗斜體 (Bold Italic)"},
+        "monospace": {"up": mono_up, "lo": mono_lo, "num": mono_num, "name": "等寬體 (Monospace)"},
+        "circled": {"up": circled_up, "lo": circled_lo, "num": circled_num, "name": "圓圈體 (Circled)"},
+        "circled_black": {"up": circled_black, "lo": circled_black, "num": circled_black_num, "name": "黑圓圈體 (Circled Black)"},
+        "squared": {"up": squared, "lo": squared, "name": "方框體 (Squared)"},
+        "squared_black": {"up": squared_black, "lo": squared_black, "name": "黑方框體 (Squared Black)"},
+        "parenthesized": {"lo": parenthesized_lo, "name": "括號體 (Parenthesized)"},
+        "sans": {"up": sans_up, "lo": sans_lo, "name": "無襯線體 (Sans-Serif)"},
+        "sans_bold": {"up": sans_bold_up, "lo": sans_bold_lo, "name": "無襯線粗體 (Sans Bold)"},
+        "sans_italic": {"up": sans_italic_up, "lo": sans_italic_lo, "name": "無襯線斜體 (Sans Italic)"},
+        "sans_bold_italic": {"up": sans_bold_italic_up, "lo": sans_bold_italic_lo, "name": "無襯線粗斜體 (Sans Bold Italic)"},
+        "upside_down": {"flip": flip_map, "name": "翻轉體 (Upside Down)"},
+        "strikeout": {"name": "刪除線體 (Strikeout)", "comb": "\u0336"},
+        "underline": {"name": "底線體 (Underline)", "comb": "\u0332"},
+        "double_underline": {"name": "雙底線體 (Double Underline)", "comb": "\u0333"},
+        "wavy_underline": {"name": "波浪底線體 (Wavy Underline)", "comb": "\u0330"},
+        "zalgo": {"name": "惡魔體 (Zalgo)", "up_list": zalgo_up, "mid_list": zalgo_mid, "down_list": zalgo_down}
+    }
+
+
+def convert_font(text: str, style_id: str, font_maps: dict) -> str:
+    import random
+    if style_id not in font_maps:
+        return text
+        
+    style = font_maps[style_id]
+    
+    if style_id == "upside_down":
+        flip_map = style["flip"]
+        res = []
+        for char in text:
+            res.append(flip_map.get(char, char))
+        return "".join(reversed(res))
+        
+    if "comb" in style:
+        comb = style["comb"]
+        return "".join((char + comb) if char != " " else char for char in text)
+        
+    if style_id == "zalgo":
+        res = []
+        for char in text:
+            if char == " ":
+                res.append(char)
+                continue
+            res.append(char)
+            for _ in range(random.randint(1, 2)):
+                res.append(random.choice(style["up_list"]))
+            for _ in range(random.randint(1, 2)):
+                res.append(random.choice(style["mid_list"]))
+            for _ in range(random.randint(1, 2)):
+                res.append(random.choice(style["down_list"]))
+        return "".join(res)
+        
+    up_map = style.get("up", "")
+    lo_map = style.get("lo", "")
+    num_map = style.get("num", "")
+    
+    res = []
+    for char in text:
+        if 'A' <= char <= 'Z':
+            idx = ord(char) - ord('A')
+            if up_map and idx < len(up_map):
+                res.append(up_map[idx])
+            else:
+                res.append(char)
+        elif 'a' <= char <= 'z':
+            idx = ord(char) - ord('a')
+            if lo_map and idx < len(lo_map):
+                res.append(lo_map[idx])
+            else:
+                res.append(char)
+        elif '0' <= char <= '9':
+            idx = ord(char) - ord('0')
+            if num_map and idx < len(num_map):
+                res.append(num_map[idx])
+            else:
+                res.append(char)
+        else:
+            res.append(char)
+            
+    return "".join(res)
+
+
+def generate_nonsense(topic: str, min_len: int) -> str:
+    import random
+    famous = [
+        "愛迪生曾經說過，天才是百分之一的靈感加上百分之九十九的汗水。這似乎解答了我的疑惑。",
+        "查爾斯·史考伯在不經意間這樣說過，一個人幾乎可以在任何他懷抱無限熱忱的事情上成功。這啟發了我。",
+        "培根曾經提到過，深思熟慮的考慮往往能避免不可挽回的錯誤。這不禁令我深思。",
+        "歌德在不經意間這樣說過，決定一個人的一生，以及整個命運的，只是一瞬之間。這句話看似簡單，但其中的意義不可忽視。",
+        "富蘭克林曾經說過，你熱愛生命嗎？那麼別浪費時間，因為時間是組成生命的材料。帶著這句話，我們還要更加慎重的審視這個問題。",
+        "拉羅什福科曾經提到過，我們唯一不會改正的缺點是軟弱。這似乎解答了我的疑惑。",
+        "達·芬奇在不經意間這樣說過，勤勞一日，可得一日安眠；勤勞一生，可得幸福長眠。這不禁令我深思。",
+        "康德曾經說過，既然我已經踏上這條道路，那麼，任何東西都不應妨礙我沿著這條路走下去。這啟發了我。",
+        "莎士比亞在不經意間這樣說過，意志命運往往背道而馳，決心終會全部推倒。這句話把我們帶到了新的維度去思考這個問題。",
+        "叔本華曾經提到過，普通人只想到如何度過時間，有才能的人設法利用時間。帶著這句話，我們還要更加慎重的審視這個問題。",
+        "伏爾泰曾經提到過，不經巨大的困難，就不有偉大的事業。這似乎解答了我的疑惑。"
+    ]
+    
+    bother = [
+        "我們不得不面對一個非常尷尬的事實，那就是，",
+        "就我個人來說，{topic}對我的意義，不能不說是非常重大。",
+        "一般來說，我們一般認為，抓住了問題的關鍵，其他一切則會迎刃而解。",
+        "而這些並不是完全重要，更加重要的新概念是，",
+        "帶著這些問題，我們來審視一下{topic}。",
+        "在這種困難的抉擇下，本人思來想去，寢食難安。",
+        "本人也是經過了深思熟慮，在每個日日夜夜思考這個問題。",
+        "{topic}，發生了會如何，不發生又會如何。",
+        "我們都知道，只要有意義，那麼就必須慎重考慮。",
+        "要生存就得滿足需要，這是一條鐵律。",
+        "所謂{topic}，關鍵是{topic}需要如何寫。",
+        "這種事實對本人來說意義重大，相信對這個世界也是有一定意義的。",
+        "那麼，既然如此，既然如何，要想清楚，{topic}，到底是一種怎麼樣的存在。",
+        "解決{topic}的問題，是非常非常重要的。所以，",
+        "每個人都不得不面對這些問題。在面對這種問題時，",
+        "在這種不可避免的衝突下，我們必須解決這個問題。",
+        "這啟發了我，對我而言，這不僅僅是一個簡單的抉擇，更是我人生中的一個重要轉折點。",
+        "這不僅僅是為了解決當前的困境，更是為了長遠的未來鋪路。",
+        "那麼，我們該如何看待這件事情？我們應該從多角度、多層次去剖析它。",
+        "我們需要明白的是，這件事情的本質並不在於它本身，而是在於它所帶來的深遠影響。"
+    ]
+    
+    result = ""
+    while len(result) < min_len:
+        choice = random.randint(0, 100)
+        if choice < 30:
+            result += random.choice(famous)
+        else:
+            result += random.choice(bother).format(topic=topic)
+            
+    if len(result) > min_len:
+        result = result[:min_len]
+    return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TTS (Text-to-Speech) UI 元件 (雙層動態分類選單)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VOICE_CATEGORIES = {
+    "zh-TW": [
+        ("zh-TW-HsiaoChenNeural", "曉臻 (女 - 臺灣)"),
+        ("zh-TW-YunJheNeural", "雲哲 (男 - 臺灣)"),
+        ("zh-TW-HsiaoYuNeural", "曉雨 (女 - 臺灣)")
+    ],
+    "zh-CN": [
+        ("zh-CN-XiaoxiaoNeural", "曉曉 (女 - 大陸普通話)"),
+        ("zh-CN-YunxiNeural", "雲希 (男 - 大陸普通話)"),
+        ("zh-CN-YunjianNeural", "雲健 (男 - 大陸普通話)"),
+        ("zh-CN-XiaoyiNeural", "曉伊 (女 - 大陸普通話)"),
+        ("zh-CN-YunxiaNeural", "雲夏 (男 - 大陸普通話)"),
+        ("zh-CN-YunyangNeural", "雲揚 (男 - 大陸普通話)"),
+        ("zh-CN-liaoning-XiaobeiNeural", "曉北 (女 - 東北遼寧)"),
+        ("zh-CN-shaanxi-XiaoniNeural", "曉妮 (女 - 陝西陝北)")
+    ],
+    "zh-HK": [
+        ("zh-HK-HiuGaaiNeural", "曉佳 (女 - 粵語)"),
+        ("zh-HK-HiuMaanNeural", "曉蔓 (女 - 粵語)"),
+        ("zh-HK-WanLungNeural", "雲龍 (男 - 粵語)")
+    ],
+    "en-US": [
+        ("en-US-JennyNeural", "Jenny (女 - 美語)"),
+        ("en-US-GuyNeural", "Guy (男 - 美語)"),
+        ("en-US-AriaNeural", "Aria (女 - 美語)"),
+        ("en-US-AvaNeural", "Ava (女 - 美語)"),
+        ("en-US-AndrewNeural", "Andrew (男 - 美語)"),
+        ("en-US-EmmaNeural", "Emma (女 - 美語)"),
+        ("en-US-BrianNeural", "Brian (男 - 美語)"),
+        ("en-US-AnaNeural", "Ana (女 - 兒童美語)"),
+        ("en-US-ChristopherNeural", "Christopher (男 - 美語)"),
+        ("en-US-EricNeural", "Eric (男 - 美語)"),
+        ("en-US-MichelleNeural", "Michelle (女 - 美語)"),
+        ("en-US-RogerNeural", "Roger (男 - 美語)"),
+        ("en-US-SteffanNeural", "Steffan (男 - 美語)")
+    ],
+    "en-GB": [
+        ("en-GB-SoniaNeural", "Sonia (女 - 英語)"),
+        ("en-GB-RyanNeural", "Ryan (男 - 英語)"),
+        ("en-GB-LibbyNeural", "Libby (女 - 英語)"),
+        ("en-GB-MaisieNeural", "Maisie (女 - 英語)"),
+        ("en-GB-ThomasNeural", "Thomas (男 - 英語)")
+    ],
+    "ja-JP": [
+        ("ja-JP-NanamiNeural", "Nanami (女 - 日語)"),
+        ("ja-JP-KeitaNeural", "Keita (男 - 日語)")
+    ],
+    "ko-KR": [
+        ("ko-KR-SunHiNeural", "SunHi (女 - 韓語)"),
+        ("ko-KR-InJoonNeural", "InJoon (男 - 韓語)"),
+        ("ko-KR-HyunsuMultilingualNeural", "Hyunsu (男 - 多語韓語)")
+    ],
+    "fr-de": [
+        ("fr-FR-DeniseNeural", "Denise (女 - 法語)"),
+        ("fr-FR-EloiseNeural", "Eloise (女 - 法語)"),
+        ("fr-FR-HenriNeural", "Henri (男 - 法語)"),
+        ("de-DE-KatjaNeural", "Katja (女 - 德語)"),
+        ("de-DE-ConradNeural", "Conrad (男 - 德語)"),
+        ("de-DE-KillianNeural", "Killian (男 - 德語)"),
+        ("de-DE-AmalaNeural", "Amala (女 - 德語)")
+    ],
+    "es-it": [
+        ("es-ES-ElviraNeural", "Elvira (女 - 西班牙語)"),
+        ("es-ES-AlvaroNeural", "Alvaro (男 - 西班牙語)"),
+        ("it-IT-ElsaNeural", "Elsa (女 - 義大利語)"),
+        ("it-IT-DiegoNeural", "Diego (男 - 義大利語)"),
+        ("it-IT-GiuseppeMultilingualNeural", "Giuseppe (男 - 多語義語)"),
+        ("it-IT-IsabellaNeural", "Isabella (女 - 義大利語)")
+    ],
+    "others": [
+        ("vi-VN-HoaiMyNeural", "Hoài My (女 - 越南語)"),
+        ("vi-VN-NamMinhNeural", "Nam Minh (男 - 越南語)"),
+        ("th-TH-PremwadeeNeural", "Premwadee (女 - 泰語)"),
+        ("th-TH-NiwatNeural", "Niwat (男 - 泰語)"),
+        ("id-ID-ArdiNeural", "Ardi (男 - 印尼語)"),
+        ("id-ID-GadisNeural", "Gadis (女 - 印尼語)"),
+        ("fil-PH-AngeloNeural", "Angelo (男 - 菲律賓語)"),
+        ("fil-PH-BlessicaNeural", "Blessica (女 - 菲律賓語)")
+    ]
+}
+
+
+class TTSCategorySelect(discord.ui.Select):
+    def __init__(self, current_category: str):
+        options = [
+            discord.SelectOption(label="臺灣中文 (Traditional Chinese)", value="zh-TW", emoji="🇹🇼"),
+            discord.SelectOption(label="大陸普通話 (Simplified Chinese)", value="zh-CN", emoji="🇨🇳"),
+            discord.SelectOption(label="粵語香港話 (Cantonese)", value="zh-HK", emoji="🇭🇰"),
+            discord.SelectOption(label="美式英文 (US English)", value="en-US", emoji="🇺🇸"),
+            discord.SelectOption(label="英式英文 (UK English)", value="en-GB", emoji="🇬🇧"),
+            discord.SelectOption(label="日語 (Japanese)", value="ja-JP", emoji="🇯🇵"),
+            discord.SelectOption(label="韓語 (Korean)", value="ko-KR", emoji="🇰🇷"),
+            discord.SelectOption(label="法語與德語 (French & German)", value="fr-de", emoji="🇪🇺"),
+            discord.SelectOption(label="西班牙與義大利語 (Spanish & Italian)", value="es-it", emoji="🇪🇺"),
+            discord.SelectOption(label="其他亞洲語言 (Other Asian)", value="others", emoji="🌏")
+        ]
+        
+        for option in options:
+            if option.value == current_category:
+                option.default = True
+                
+        super().__init__(
+            placeholder="選擇語系分類...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_category = self.values[0]
+        first_voice = VOICE_CATEGORIES[self.view.selected_category][0][0]
+        self.view.selected_voice = first_voice
+        self.view.update_voice_select_options()
+        await self.view.update_embed(interaction)
+
+
+class TTSVoiceSelect(discord.ui.Select):
+    def __init__(self, category: str, current_voice: str):
+        options = []
+        voices_list = VOICE_CATEGORIES.get(category, VOICE_CATEGORIES["zh-TW"])
+        for val, name in voices_list:
+            options.append(discord.SelectOption(
+                label=name,
+                value=val,
+                default=(val == current_voice)
+            ))
+            
+        super().__init__(
+            placeholder="選擇語音角色...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_voice = self.values[0]
+        await self.view.update_embed(interaction)
+
+
+class TTSToneSelect(discord.ui.Select):
+    def __init__(self, current_tone: str):
+        options = [
+            discord.SelectOption(label="速度: 正常 | 音調: 正常", value="normal_normal", description="預設設定"),
+            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 正常", value="fast_normal", description="快語速"),
+            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 正常", value="slow_normal", description="慢語速"),
+            discord.SelectOption(label="速度: 正常 | 音調: 較高 (+10Hz)", value="normal_high", description="偏高音"),
+            discord.SelectOption(label="速度: 正常 | 音調: 較低 (-10Hz)", value="normal_low", description="偏低音"),
+            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 較高 (+10Hz)", value="fast_high", description="活潑愉快"),
+            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 較低 (-10Hz)", value="slow_low", description="低沉穩重")
+        ]
+        
+        for option in options:
+            if option.value == current_tone:
+                option.default = True
+                
+        super().__init__(
+            placeholder="選擇語速與音調...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_tone = self.values[0]
+        await self.view.update_embed(interaction)
+
+
+class TTSInteractiveView(discord.ui.View):
+    def __init__(self, text: str, user_id: int):
+        super().__init__(timeout=180)
+        self.text = text
+        self.user_id = user_id
+        
+        self.selected_category = "zh-TW"
+        self.selected_voice = "zh-TW-HsiaoChenNeural"
+        self.selected_tone = "normal_normal"
+        
+        self.category_select = TTSCategorySelect(self.selected_category)
+        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
+        self.tone_select = TTSToneSelect(self.selected_tone)
+        
+        self.add_item(self.category_select)
+        self.add_item(self.voice_select)
+        self.add_item(self.tone_select)
+        
+    def update_voice_select_options(self):
+        self.remove_item(self.voice_select)
+        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
+        self.add_item(self.voice_select)
+        
+    async def update_embed(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
+            color=Colors.PRIMARY
+        )
+        
+        cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
+        voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
+        tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
+        
+        embed.add_field(name="**語言分類**", value=cat_label, inline=True)
+        embed.add_field(name="**語音角色**", value=voice_label, inline=True)
+        embed.add_field(name="**語速音調**", value=tone_label, inline=True)
+        
+        preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
+        embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
+        embed.set_footer(text="可重複切換分類與角色。確認後，點擊下方「🔊 開始生成語音」按鈕。")
+        
+        for option in self.category_select.options:
+            option.default = (option.value == self.selected_category)
+        for option in self.tone_select.options:
+            option.default = (option.value == self.selected_tone)
+            
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ 這不是您的 TTS 產生器！", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🔊 開始生成語音", style=discord.ButtonStyle.success, row=3, custom_id="tts_generate_btn")
+    async def generate_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        speed_tone_map = {
+            "normal_normal": ("+0%", "+0Hz"),
+            "fast_normal": ("+20%", "+0Hz"),
+            "slow_normal": ("-20%", "+0Hz"),
+            "normal_high": ("+0%", "+10Hz"),
+            "normal_low": ("+0%", "-10Hz"),
+            "fast_high": ("+20%", "+10Hz"),
+            "slow_low": ("-20%", "-10Hz")
+        }
+        rate, pitch = speed_tone_map.get(self.selected_tone, ("+0%", "+0Hz"))
+        
+        for child in self.children:
+            child.disabled = True
+            
+        embed = discord.Embed(
+            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
+            color=Colors.WARNING,
+            description="⏳ 正在為您生成語音，請稍候..."
+        )
+        await interaction.edit_original_response(embed=embed, view=self)
+        
+        try:
+            import edge_tts
+            communicate = edge_tts.Communicate(self.text, self.selected_voice, rate=rate, pitch=pitch)
+            data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    data += chunk["data"]
+            
+            if not data:
+                raise Exception("生成之音訊長度為 0 或是失敗")
+                
+            import io
+            fp = io.BytesIO(data)
+            fp.seek(0)
+            
+            success_embed = discord.Embed(
+                title="🎙️ TTS 文字轉語音產生器",
+                color=Colors.SUCCESS
+            )
+            
+            cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
+            voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
+            tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
+            
+            success_embed.add_field(name="**語言分類**", value=cat_label, inline=True)
+            success_embed.add_field(name="**發音角色**", value=voice_label, inline=True)
+            success_embed.add_field(name="**語速音調**", value=tone_label, inline=True)
+            preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
+            success_embed.add_field(name="**唸的文字**", value=f"```{preview}```", inline=False)
+            success_embed.set_footer(text=f"語音已成功產生！")
+            
+            await interaction.edit_original_response(
+                embed=success_embed,
+                view=self,
+                attachments=[discord.File(fp, filename="tts.mp3")]
+            )
+            
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ 語音生成失敗",
+                description=f"發生錯誤：`{str(e)}`",
+                color=Colors.ERROR
+            )
+            await interaction.edit_original_response(embed=error_embed, view=self)
+
+
 class Tools(commands.GroupCog, name="tool", description="實用生活工具箱"):
     """工具系統 — 實用生活工具"""
 
@@ -1081,683 +1755,6 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
             embed.set_footer(text="可重複切換分類與角色。確認後，點擊下方「🔊 開始生成語音」按鈕。")
             
             await interaction.response.send_message(embed=embed, view=view)
-
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FakeURLView UI 元件 (發送偽造超連結到頻道)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class FakeURLView(discord.ui.View):
-    def __init__(self, hide_url: str, real_url: str):
-        super().__init__(timeout=180)
-        self.hide_url = hide_url
-        self.real_url = real_url
-
-    @discord.ui.button(label="發送到頻道", style=discord.ButtonStyle.success, emoji="📤", custom_id="fake_url_send")
-    async def send_to_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # interaction and button are passed by discord.py
-        embed = discord.Embed(
-            description=f"🔗 [{self.hide_url}]({self.real_url})",
-            color=Colors.PRIMARY
-        )
-        avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
-        embed.set_author(name=f"{interaction.user.display_name} 分享了一個連結", icon_url=avatar_url)
-        
-        await interaction.channel.send(embed=embed)
-        
-        # 停用按鈕並編輯原訊息以防重複發送
-        self.clear_items()
-        await interaction.response.edit_message(view=self)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SearchView UI 元件 (Google Search 分頁)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class SearchView(discord.ui.View):
-    def __init__(self, query: str, results: list, page: int = 0, per_page: int = 3):
-        super().__init__(timeout=60)
-        self.query = query
-        self.results = results
-        self.page = page
-        self.per_page = per_page
-
-        self.add_item(discord.ui.Button(
-            label="查看更多",
-            url=f"https://www.google.com/search?q={urllib.parse.quote(query)}",
-            style=discord.ButtonStyle.link
-        ))
-        self.add_item(PrevPageButton(query, results, page, per_page))
-        self.add_item(NextPageButton(query, results, page, per_page))
-
-
-class PrevPageButton(discord.ui.Button):
-    def __init__(self, query: str, results: list, page: int, per_page: int):
-        super().__init__(label="⬅️ 上一頁", style=discord.ButtonStyle.secondary)
-        self.query = query
-        self.results = results
-        self.page = page
-        self.per_page = per_page
-        if page <= 0:
-            self.disabled = True
-
-    async def callback(self, interaction: discord.Interaction):
-        start = (self.page - 1) * self.per_page
-        end = start + self.per_page
-        prev_results = self.results[start:end]
-
-        embed = discord.Embed(
-            title=f"🔍 {self.query} 的搜尋結果（第 {self.page} 頁）",
-            color=Colors.PRIMARY
-        )
-
-        for idx, (title, link) in enumerate(prev_results, start=start+1):
-            embed.add_field(name=f"{idx}. {title}", value=link, inline=False)
-
-        view = SearchView(self.query, self.results, self.page - 1, self.per_page)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class NextPageButton(discord.ui.Button):
-    def __init__(self, query: str, results: list, page: int, per_page: int):
-        super().__init__(label="下一頁 ➡️", style=discord.ButtonStyle.primary)
-        self.query = query
-        self.results = results
-        self.page = page
-        self.per_page = per_page
-        if (page + 1) * per_page >= len(results):
-            self.disabled = True
-
-    async def callback(self, interaction: discord.Interaction):
-        start = (self.page + 1) * self.per_page
-        end = start + self.per_page
-        next_results = self.results[start:end]
-
-        embed = discord.Embed(
-            title=f"🔍 {self.query} 的搜尋結果（第 {self.page+2} 頁）",
-            color=Colors.PRIMARY
-        )
-
-        for idx, (title, link) in enumerate(next_results, start=start+1):
-            embed.add_field(name=f"{idx}. {title}", value=link, inline=False)
-
-        view = SearchView(self.query, self.results, self.page + 1, self.per_page)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FontConverter UI 元件 & 轉換對照表
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class FontSelect(discord.ui.Select):
-    def __init__(self, original_text: str, font_maps: dict):
-        options = []
-        for style_id, style_data in font_maps.items():
-            preview = convert_font(original_text, style_id, font_maps)[:80]
-            options.append(discord.SelectOption(
-                label=style_data["name"],
-                value=style_id,
-                description=preview
-            ))
-            
-        super().__init__(
-            placeholder="選擇要複製/發送的字體樣式...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-        self.original_text = original_text
-        self.font_maps = font_maps
-
-    async def callback(self, interaction: discord.Interaction):
-        style_id = self.values[0]
-        styled_text = convert_font(self.original_text, style_id, self.font_maps)
-        style_name = self.font_maps[style_id]["name"]
-        
-        if hasattr(self.view, "selected_style"):
-            self.view.selected_style = style_id
-            
-        embed = discord.Embed(
-            title=f"🔤 字體轉換結果 — {style_name}",
-            description=f"請長按或點選以下內容進行複製：\n\n```\n{styled_text}\n```\n\n**手機直接複製欄位**：\n{styled_text}",
-            color=Colors.PRIMARY
-        )
-        embed.set_footer(text=f"原始輸入：{self.original_text}")
-        
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class FontConverterView(discord.ui.View):
-    def __init__(self, original_text: str, font_maps: dict):
-        super().__init__(timeout=180)
-        self.original_text = original_text
-        self.font_maps = font_maps
-        self.selected_style = list(font_maps.keys())[0]
-        
-        self.select_menu = FontSelect(original_text, font_maps)
-        self.add_item(self.select_menu)
-        
-    @discord.ui.button(label="發送到頻道", style=discord.ButtonStyle.success, emoji="📤", custom_id="font_send_to_channel")
-    async def send_to_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        styled_text = convert_font(self.original_text, self.selected_style, self.font_maps)
-        await interaction.response.send_message(f"✨ {interaction.user.mention} 使用趣味字體說：\n{styled_text}")
-
-
-def _generate_font_maps():
-    def get_math_chars(start_up, start_lo, exceptions=None):
-        if exceptions is None:
-            exceptions = {}
-        up = "".join(chr(exceptions.get(start_up + i, start_up + i)) for i in range(26))
-        lo = "".join(chr(exceptions.get(start_lo + i, start_lo + i)) for i in range(26))
-        return up, lo
-
-    script_exceptions = {
-        0x1D49D: 0x212C, 0x1D4A0: 0x2130, 0x1D4A1: 0x2131, 0x1D4A3: 0x210B,
-        0x1D4A4: 0x2110, 0x1D4A7: 0x2112, 0x1D4A8: 0x2133, 0x1D4AD: 0x211B,
-        0x1D4BB: 0x212F, 0x1D4BD: 0x210A, 0x1D4C5: 0x2134,
-    }
-    frak_exceptions = {
-        0x1D506: 0x212D, 0x1D50B: 0x210C, 0x1D50C: 0x2111, 0x1D515: 0x211C, 0x1D51D: 0x2128,
-    }
-    double_exceptions = {
-        0x1D53A: 0x2102, 0x1D53F: 0x210D, 0x1D545: 0x2115, 0x1D547: 0x2119,
-        0x1D548: 0x211A, 0x1D549: 0x211D, 0x1D551: 0x2124,
-    }
-
-    bold_up, bold_lo = get_math_chars(0x1D400, 0x1D41A)
-    italic_up, italic_lo = get_math_chars(0x1D434, 0x1D44E, {0x1D455: 0x210E})
-    bold_italic_up, bold_italic_lo = get_math_chars(0x1D468, 0x1D482)
-    script_up, script_lo = get_math_chars(0x1D49C, 0x1D4B6, script_exceptions)
-    script_bold_up, script_bold_lo = get_math_chars(0x1D4D0, 0x1D4EA)
-    frak_up, frak_lo = get_math_chars(0x1D504, 0x1D51E, frak_exceptions)
-    frak_bold_up, frak_bold_lo = get_math_chars(0x1D56C, 0x1D586)
-    double_up, double_lo = get_math_chars(0x1D538, 0x1D552, double_exceptions)
-    mono_up, mono_lo = get_math_chars(0x1D670, 0x1D68A)
-    
-    sans_up, sans_lo = get_math_chars(0x1D5A0, 0x1D5BA)
-    sans_bold_up, sans_bold_lo = get_math_chars(0x1D5D4, 0x1D5EE)
-    sans_italic_up, sans_italic_lo = get_math_chars(0x1D608, 0x1D622)
-    sans_bold_italic_up, sans_bold_italic_lo = get_math_chars(0x1D63C, 0x1D656)
-
-    # Standard sets
-    circled_up = "".join(chr(0x24B6 + i) for i in range(26))
-    circled_lo = "".join(chr(0x24D0 + i) for i in range(26))
-    circled_num = "⓪" + "".join(chr(0x2460 + i) for i in range(9))
-
-    circled_black = "".join(chr(0x1F150 + i) for i in range(26))
-    circled_black_num = "⓿" + "".join(chr(0x2776 + i) for i in range(9))
-
-    squared = "".join(chr(0x1F130 + i) for i in range(26))
-    squared_black = "".join(chr(0x1F170 + i) for i in range(26))
-    parenthesized_lo = "".join(chr(0x249C + i) for i in range(26))
-
-    double_num = "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡"
-    bold_num = "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
-    mono_num = "𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿"
-
-    flip_map = {
-        'a': 'ɐ', 'b': 'q', 'c': 'ɔ', 'd': 'p', 'e': 'ǝ', 'f': 'ɟ', 'g': 'ƃ', 'h': 'ɥ', 'i': 'ı', 'j': 'ɾ',
-        'k': 'ʞ', 'l': 'l', 'm': 'ɯ', 'n': 'u', 'o': 'o', 'p': 'd', 'q': 'q', 'r': 'ɹ', 's': 's', 't': 'ʇ',
-        'u': 'n', 'v': 'ʌ', 'w': 'ʍ', 'x': 'x', 'y': 'ʎ', 'z': 'z',
-        'A': '∀', 'B': '𐐒', 'C': 'Ɔ', 'D': '◖', 'E': 'Ǝ', 'F': 'Ⅎ', 'G': '⅁', 'H': 'H', 'I': 'I', 'J': 'ſ',
-        'K': 'ʞ', 'L': '˥', 'M': 'W', 'N': 'N', 'O': 'O', 'P': 'Ԁ', 'Q': '◌', 'R': 'ᵱ', 'S': 'S', 'T': '⊥',
-        'U': '∩', 'V': 'Ʌ', 'W': 'M', 'X': 'X', 'Y': '⅄', 'Z': 'Z',
-        '1': '⇂', '2': 'ᄅ', '3': 'Ɛ', '4': 'ㄣ', '5': 'ϛ', '6': '9', '7': 'ㄥ', '8': '8', '9': '6', '0': '0',
-    }
-
-    zalgo_up = ['\u030d', '\u030e', '\u0304', '\u0305', '\u030f', '\u0311', '\u0306']
-    zalgo_mid = ['\u0315', '\u031b', '\u0340', '\u0341', '\u0358', '\u0321']
-    zalgo_down = ['\u0316', '\u0317', '\u0318', '\u0319', '\u031c', '\u031d', '\u031e']
-
-    return {
-        "fraktur": {"up": frak_up, "lo": frak_lo, "name": "哥德體 (Fraktur)"},
-        "fraktur_bold": {"up": frak_bold_up, "lo": frak_bold_lo, "name": "粗哥德體 (Fraktur Bold)"},
-        "double_struck": {"up": double_up, "lo": double_lo, "num": double_num, "name": "空心體 (Double Struck)"},
-        "script": {"up": script_up, "lo": script_lo, "name": "手寫體 (Script)"},
-        "script_bold": {"up": script_bold_up, "lo": script_bold_lo, "name": "粗手寫體 (Script Bold)"},
-        "bold": {"up": bold_up, "lo": bold_lo, "num": bold_num, "name": "粗體 (Bold)"},
-        "italic": {"up": italic_up, "lo": italic_lo, "name": "斜體 (Italic)"},
-        "bold_italic": {"up": bold_italic_up, "lo": bold_italic_lo, "name": "粗斜體 (Bold Italic)"},
-        "monospace": {"up": mono_up, "lo": mono_lo, "num": mono_num, "name": "等寬體 (Monospace)"},
-        "circled": {"up": circled_up, "lo": circled_lo, "num": circled_num, "name": "圓圈體 (Circled)"},
-        "circled_black": {"up": circled_black, "lo": circled_black, "num": circled_black_num, "name": "黑圓圈體 (Circled Black)"},
-        "squared": {"up": squared, "lo": squared, "name": "方框體 (Squared)"},
-        "squared_black": {"up": squared_black, "lo": squared_black, "name": "黑方框體 (Squared Black)"},
-        "parenthesized": {"lo": parenthesized_lo, "name": "括號體 (Parenthesized)"},
-        "sans": {"up": sans_up, "lo": sans_lo, "name": "無襯線體 (Sans-Serif)"},
-        "sans_bold": {"up": sans_bold_up, "lo": sans_bold_lo, "name": "無襯線粗體 (Sans Bold)"},
-        "sans_italic": {"up": sans_italic_up, "lo": sans_italic_lo, "name": "無襯線斜體 (Sans Italic)"},
-        "sans_bold_italic": {"up": sans_bold_italic_up, "lo": sans_bold_italic_lo, "name": "無襯線粗斜體 (Sans Bold Italic)"},
-        "upside_down": {"flip": flip_map, "name": "翻轉體 (Upside Down)"},
-        "strikeout": {"name": "刪除線體 (Strikeout)", "comb": "\u0336"},
-        "underline": {"name": "底線體 (Underline)", "comb": "\u0332"},
-        "double_underline": {"name": "雙底線體 (Double Underline)", "comb": "\u0333"},
-        "wavy_underline": {"name": "波浪底線體 (Wavy Underline)", "comb": "\u0330"},
-        "zalgo": {"name": "惡魔體 (Zalgo)", "up_list": zalgo_up, "mid_list": zalgo_mid, "down_list": zalgo_down}
-    }
-
-
-def convert_font(text: str, style_id: str, font_maps: dict) -> str:
-    import random
-    if style_id not in font_maps:
-        return text
-        
-    style = font_maps[style_id]
-    
-    if style_id == "upside_down":
-        flip_map = style["flip"]
-        res = []
-        for char in text:
-            res.append(flip_map.get(char, char))
-        return "".join(reversed(res))
-        
-    if "comb" in style:
-        comb = style["comb"]
-        return "".join((char + comb) if char != " " else char for char in text)
-        
-    if style_id == "zalgo":
-        res = []
-        for char in text:
-            if char == " ":
-                res.append(char)
-                continue
-            res.append(char)
-            for _ in range(random.randint(1, 2)):
-                res.append(random.choice(style["up_list"]))
-            for _ in range(random.randint(1, 2)):
-                res.append(random.choice(style["mid_list"]))
-            for _ in range(random.randint(1, 2)):
-                res.append(random.choice(style["down_list"]))
-        return "".join(res)
-        
-    up_map = style.get("up", "")
-    lo_map = style.get("lo", "")
-    num_map = style.get("num", "")
-    
-    res = []
-    for char in text:
-        if 'A' <= char <= 'Z':
-            idx = ord(char) - ord('A')
-            if up_map and idx < len(up_map):
-                res.append(up_map[idx])
-            else:
-                res.append(char)
-        elif 'a' <= char <= 'z':
-            idx = ord(char) - ord('a')
-            if lo_map and idx < len(lo_map):
-                res.append(lo_map[idx])
-            else:
-                res.append(char)
-        elif '0' <= char <= '9':
-            idx = ord(char) - ord('0')
-            if num_map and idx < len(num_map):
-                res.append(num_map[idx])
-            else:
-                res.append(char)
-        else:
-            res.append(char)
-            
-    return "".join(res)
-
-
-def generate_nonsense(topic: str, min_len: int) -> str:
-    import random
-    famous = [
-        "愛迪生曾經說過，天才是百分之一的靈感加上百分之九十九的汗水。這似乎解答了我的疑惑。",
-        "查爾斯·史考伯在不經意間這樣說過，一個人幾乎可以在任何他懷抱無限熱忱的事情上成功。這啟發了我。",
-        "培根曾經提到過，深思熟慮的考慮往往能避免不可挽回的錯誤。這不禁令我深思。",
-        "歌德在不經意間這樣說過，決定一個人的一生，以及整個命運的，只是一瞬之間。這句話看似簡單，但其中的意義不可忽視。",
-        "富蘭克林曾經說過，你熱愛生命嗎？那麼別浪費時間，因為時間是組成生命的材料。帶著這句話，我們還要更加慎重的審視這個問題。",
-        "拉羅什福科曾經提到過，我們唯一不會改正的缺點是軟弱。這似乎解答了我的疑惑。",
-        "達·芬奇在不經意間這樣說過，勤勞一日，可得一日安眠；勤勞一生，可得幸福長眠。這不禁令我深思。",
-        "康德曾經說過，既然我已經踏上這條道路，那麼，任何東西都不應妨礙我沿著這條路走下去。這啟發了我。",
-        "莎士比亞在不經意間這樣說過，意志命運往往背道而馳，決心終會全部推倒。這句話把我們帶到了新的維度去思考這個問題。",
-        "叔本華曾經提到過，普通人只想到如何度過時間，有才能的人設法利用時間。帶著這句話，我們還要更加慎重的審視這個問題。",
-        "伏爾泰曾經提到過，不經巨大的困難，就不有偉大的事業。這似乎解答了我的疑惑。"
-    ]
-    
-    bother = [
-        "我們不得不面對一個非常尷尬的事實，那就是，",
-        "就我個人來說，{topic}對我的意義，不能不說是非常重大。",
-        "一般來說，我們一般認為，抓住了問題的關鍵，其他一切則會迎刃而解。",
-        "而這些並不是完全重要，更加重要的新概念是，",
-        "帶著這些問題，我們來審視一下{topic}。",
-        "在這種困難的抉擇下，本人思來想去，寢食難安。",
-        "本人也是經過了深思熟慮，在每個日日夜夜思考這個問題。",
-        "{topic}，發生了會如何，不發生又會如何。",
-        "我們都知道，只要有意義，那麼就必須慎重考慮。",
-        "要生存就得滿足需要，這是一條鐵律。",
-        "所謂{topic}，關鍵是{topic}需要如何寫。",
-        "這種事實對本人來說意義重大，相信對這個世界也是有一定意義的。",
-        "那麼，既然如此，既然如何，要想清楚，{topic}，到底是一種怎麼樣的存在。",
-        "解決{topic}的問題，是非常非常重要的。所以，",
-        "每個人都不得不面對這些問題。在面對這種問題時，",
-        "在這種不可避免的衝突下，我們必須解決這個問題。",
-        "這啟發了我，對我而言，這不僅僅是一個簡單的抉擇，更是我人生中的一個重要轉折點。",
-        "這不僅僅是為了解決當前的困境，更是為了長遠的未來鋪路。",
-        "那麼，我們該如何看待這件事情？我們應該從多角度、多層次去剖析它。",
-        "我們需要明白的是，這件事情的本質並不在於它本身，而是在於它所帶來的深遠影響。"
-    ]
-    
-    result = ""
-    while len(result) < min_len:
-        choice = random.randint(0, 100)
-        if choice < 30:
-            result += random.choice(famous)
-        else:
-            result += random.choice(bother).format(topic=topic)
-            
-    if len(result) > min_len:
-        result = result[:min_len]
-    return result
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TTS (Text-to-Speech) UI 元件 (雙層動態分類選單)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-VOICE_CATEGORIES = {
-    "zh-TW": [
-        ("zh-TW-HsiaoChenNeural", "曉臻 (女 - 臺灣)"),
-        ("zh-TW-YunJheNeural", "雲哲 (男 - 臺灣)"),
-        ("zh-TW-HsiaoYuNeural", "曉雨 (女 - 臺灣)")
-    ],
-    "zh-CN": [
-        ("zh-CN-XiaoxiaoNeural", "曉曉 (女 - 大陸普通話)"),
-        ("zh-CN-YunxiNeural", "雲希 (男 - 大陸普通話)"),
-        ("zh-CN-YunjianNeural", "雲健 (男 - 大陸普通話)"),
-        ("zh-CN-XiaoyiNeural", "曉伊 (女 - 大陸普通話)"),
-        ("zh-CN-YunxiaNeural", "雲夏 (男 - 大陸普通話)"),
-        ("zh-CN-YunyangNeural", "雲揚 (男 - 大陸普通話)"),
-        ("zh-CN-liaoning-XiaobeiNeural", "曉北 (女 - 東北遼寧)"),
-        ("zh-CN-shaanxi-XiaoniNeural", "曉妮 (女 - 陝西陝北)")
-    ],
-    "zh-HK": [
-        ("zh-HK-HiuGaaiNeural", "曉佳 (女 - 粵語)"),
-        ("zh-HK-HiuMaanNeural", "曉蔓 (女 - 粵語)"),
-        ("zh-HK-WanLungNeural", "雲龍 (男 - 粵語)")
-    ],
-    "en-US": [
-        ("en-US-JennyNeural", "Jenny (女 - 美語)"),
-        ("en-US-GuyNeural", "Guy (男 - 美語)"),
-        ("en-US-AriaNeural", "Aria (女 - 美語)"),
-        ("en-US-AvaNeural", "Ava (女 - 美語)"),
-        ("en-US-AndrewNeural", "Andrew (男 - 美語)"),
-        ("en-US-EmmaNeural", "Emma (女 - 美語)"),
-        ("en-US-BrianNeural", "Brian (男 - 美語)"),
-        ("en-US-AnaNeural", "Ana (女 - 兒童美語)"),
-        ("en-US-ChristopherNeural", "Christopher (男 - 美語)"),
-        ("en-US-EricNeural", "Eric (男 - 美語)"),
-        ("en-US-MichelleNeural", "Michelle (女 - 美語)"),
-        ("en-US-RogerNeural", "Roger (男 - 美語)"),
-        ("en-US-SteffanNeural", "Steffan (男 - 美語)")
-    ],
-    "en-GB": [
-        ("en-GB-SoniaNeural", "Sonia (女 - 英語)"),
-        ("en-GB-RyanNeural", "Ryan (男 - 英語)"),
-        ("en-GB-LibbyNeural", "Libby (女 - 英語)"),
-        ("en-GB-MaisieNeural", "Maisie (女 - 英語)"),
-        ("en-GB-ThomasNeural", "Thomas (男 - 英語)")
-    ],
-    "ja-JP": [
-        ("ja-JP-NanamiNeural", "Nanami (女 - 日語)"),
-        ("ja-JP-KeitaNeural", "Keita (男 - 日語)")
-    ],
-    "ko-KR": [
-        ("ko-KR-SunHiNeural", "SunHi (女 - 韓語)"),
-        ("ko-KR-InJoonNeural", "InJoon (男 - 韓語)"),
-        ("ko-KR-HyunsuMultilingualNeural", "Hyunsu (男 - 多語韓語)")
-    ],
-    "fr-de": [
-        ("fr-FR-DeniseNeural", "Denise (女 - 法語)"),
-        ("fr-FR-EloiseNeural", "Eloise (女 - 法語)"),
-        ("fr-FR-HenriNeural", "Henri (男 - 法語)"),
-        ("de-DE-KatjaNeural", "Katja (女 - 德語)"),
-        ("de-DE-ConradNeural", "Conrad (男 - 德語)"),
-        ("de-DE-KillianNeural", "Killian (男 - 德語)"),
-        ("de-DE-AmalaNeural", "Amala (女 - 德語)")
-    ],
-    "es-it": [
-        ("es-ES-ElviraNeural", "Elvira (女 - 西班牙語)"),
-        ("es-ES-AlvaroNeural", "Alvaro (男 - 西班牙語)"),
-        ("it-IT-ElsaNeural", "Elsa (女 - 義大利語)"),
-        ("it-IT-DiegoNeural", "Diego (男 - 義大利語)"),
-        ("it-IT-GiuseppeMultilingualNeural", "Giuseppe (男 - 多語義語)"),
-        ("it-IT-IsabellaNeural", "Isabella (女 - 義大利語)")
-    ],
-    "others": [
-        ("vi-VN-HoaiMyNeural", "Hoài My (女 - 越南語)"),
-        ("vi-VN-NamMinhNeural", "Nam Minh (男 - 越南語)"),
-        ("th-TH-PremwadeeNeural", "Premwadee (女 - 泰語)"),
-        ("th-TH-NiwatNeural", "Niwat (男 - 泰語)"),
-        ("id-ID-ArdiNeural", "Ardi (男 - 印尼語)"),
-        ("id-ID-GadisNeural", "Gadis (女 - 印尼語)"),
-        ("fil-PH-AngeloNeural", "Angelo (男 - 菲律賓語)"),
-        ("fil-PH-BlessicaNeural", "Blessica (女 - 菲律賓語)")
-    ]
-}
-
-
-class TTSCategorySelect(discord.ui.Select):
-    def __init__(self, current_category: str):
-        options = [
-            discord.SelectOption(label="臺灣中文 (Traditional Chinese)", value="zh-TW", emoji="🇹🇼"),
-            discord.SelectOption(label="大陸普通話 (Simplified Chinese)", value="zh-CN", emoji="🇨🇳"),
-            discord.SelectOption(label="粵語香港話 (Cantonese)", value="zh-HK", emoji="🇭🇰"),
-            discord.SelectOption(label="美式英文 (US English)", value="en-US", emoji="🇺🇸"),
-            discord.SelectOption(label="英式英文 (UK English)", value="en-GB", emoji="🇬🇧"),
-            discord.SelectOption(label="日語 (Japanese)", value="ja-JP", emoji="🇯🇵"),
-            discord.SelectOption(label="韓語 (Korean)", value="ko-KR", emoji="🇰🇷"),
-            discord.SelectOption(label="法語與德語 (French & German)", value="fr-de", emoji="🇪🇺"),
-            discord.SelectOption(label="西班牙與義大利語 (Spanish & Italian)", value="es-it", emoji="🇪🇺"),
-            discord.SelectOption(label="其他亞洲語言 (Other Asian)", value="others", emoji="🌏")
-        ]
-        
-        for option in options:
-            if option.value == current_category:
-                option.default = True
-                
-        super().__init__(
-            placeholder="選擇語系分類...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_category = self.values[0]
-        first_voice = VOICE_CATEGORIES[self.view.selected_category][0][0]
-        self.view.selected_voice = first_voice
-        self.view.update_voice_select_options()
-        await self.view.update_embed(interaction)
-
-
-class TTSVoiceSelect(discord.ui.Select):
-    def __init__(self, category: str, current_voice: str):
-        options = []
-        voices_list = VOICE_CATEGORIES.get(category, VOICE_CATEGORIES["zh-TW"])
-        for val, name in voices_list:
-            options.append(discord.SelectOption(
-                label=name,
-                value=val,
-                default=(val == current_voice)
-            ))
-            
-        super().__init__(
-            placeholder="選擇語音角色...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=1
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_voice = self.values[0]
-        await self.view.update_embed(interaction)
-
-
-class TTSToneSelect(discord.ui.Select):
-    def __init__(self, current_tone: str):
-        options = [
-            discord.SelectOption(label="速度: 正常 | 音調: 正常", value="normal_normal", description="預設設定"),
-            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 正常", value="fast_normal", description="快語速"),
-            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 正常", value="slow_normal", description="慢語速"),
-            discord.SelectOption(label="速度: 正常 | 音調: 較高 (+10Hz)", value="normal_high", description="偏高音"),
-            discord.SelectOption(label="速度: 正常 | 音調: 較低 (-10Hz)", value="normal_low", description="偏低音"),
-            discord.SelectOption(label="速度: 較快 (+20%) | 音調: 較高 (+10Hz)", value="fast_high", description="活潑愉快"),
-            discord.SelectOption(label="速度: 較慢 (-20%) | 音調: 較低 (-10Hz)", value="slow_low", description="低沉穩重")
-        ]
-        
-        for option in options:
-            if option.value == current_tone:
-                option.default = True
-                
-        super().__init__(
-            placeholder="選擇語速與音調...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=2
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_tone = self.values[0]
-        await self.view.update_embed(interaction)
-
-
-class TTSInteractiveView(discord.ui.View):
-    def __init__(self, text: str, user_id: int):
-        super().__init__(timeout=180)
-        self.text = text
-        self.user_id = user_id
-        
-        self.selected_category = "zh-TW"
-        self.selected_voice = "zh-TW-HsiaoChenNeural"
-        self.selected_tone = "normal_normal"
-        
-        self.category_select = TTSCategorySelect(self.selected_category)
-        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
-        self.tone_select = TTSToneSelect(self.selected_tone)
-        
-        self.add_item(self.category_select)
-        self.add_item(self.voice_select)
-        self.add_item(self.tone_select)
-        
-    def update_voice_select_options(self):
-        self.remove_item(self.voice_select)
-        self.voice_select = TTSVoiceSelect(self.selected_category, self.selected_voice)
-        self.add_item(self.voice_select)
-        
-    async def update_embed(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
-            color=Colors.PRIMARY
-        )
-        
-        cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
-        voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
-        tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
-        
-        embed.add_field(name="**語言分類**", value=cat_label, inline=True)
-        embed.add_field(name="**語音角色**", value=voice_label, inline=True)
-        embed.add_field(name="**語速音調**", value=tone_label, inline=True)
-        
-        preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
-        embed.add_field(name="**要唸的文字**", value=f"```{preview}```", inline=False)
-        embed.set_footer(text="可重複切換分類與角色。確認後，點擊下方「🔊 開始生成語音」按鈕。")
-        
-        for option in self.category_select.options:
-            option.default = (option.value == self.selected_category)
-        for option in self.tone_select.options:
-            option.default = (option.value == self.selected_tone)
-            
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ 這不是您的 TTS 產生器！", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="🔊 開始生成語音", style=discord.ButtonStyle.success, row=3, custom_id="tts_generate_btn")
-    async def generate_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        
-        speed_tone_map = {
-            "normal_normal": ("+0%", "+0Hz"),
-            "fast_normal": ("+20%", "+0Hz"),
-            "slow_normal": ("-20%", "+0Hz"),
-            "normal_high": ("+0%", "+10Hz"),
-            "normal_low": ("+0%", "-10Hz"),
-            "fast_high": ("+20%", "+10Hz"),
-            "slow_low": ("-20%", "-10Hz")
-        }
-        rate, pitch = speed_tone_map.get(self.selected_tone, ("+0%", "+0Hz"))
-        
-        for child in self.children:
-            child.disabled = True
-            
-        embed = discord.Embed(
-            title="🎙️ TTS 文字轉語音產生器 (多語系互動模式)",
-            color=Colors.WARNING,
-            description="⏳ 正在為您生成語音，請稍候..."
-        )
-        await interaction.edit_original_response(embed=embed, view=self)
-        
-        try:
-            import edge_tts
-            communicate = edge_tts.Communicate(self.text, self.selected_voice, rate=rate, pitch=pitch)
-            data = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    data += chunk["data"]
-            
-            if not data:
-                raise Exception("生成之音訊長度為 0 或是失敗")
-                
-            import io
-            fp = io.BytesIO(data)
-            fp.seek(0)
-            
-            success_embed = discord.Embed(
-                title="🎙️ TTS 文字轉語音產生器",
-                color=Colors.SUCCESS
-            )
-            
-            cat_label = next(o.label for o in self.category_select.options if o.value == self.selected_category)
-            voice_label = next(o.label for o in self.voice_select.options if o.value == self.selected_voice)
-            tone_label = next(o.label for o in self.tone_select.options if o.value == self.selected_tone)
-            
-            success_embed.add_field(name="**語言分類**", value=cat_label, inline=True)
-            success_embed.add_field(name="**發音角色**", value=voice_label, inline=True)
-            success_embed.add_field(name="**語速音調**", value=tone_label, inline=True)
-            preview = self.text if len(self.text) <= 300 else self.text[:300] + "..."
-            success_embed.add_field(name="**唸的文字**", value=f"```{preview}```", inline=False)
-            success_embed.set_footer(text=f"語音已成功產生！")
-            
-            await interaction.edit_original_response(
-                embed=success_embed,
-                view=self,
-                attachments=[discord.File(fp, filename="tts.mp3")]
-            )
-            
-        except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ 語音生成失敗",
-                description=f"發生錯誤：`{str(e)}`",
-                color=Colors.ERROR
-            )
-            await interaction.edit_original_response(embed=error_embed, view=self)
-
-
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 歡迎、離開與聊天等級輔助方法與斜線指令

@@ -56,3 +56,20 @@ class TestSystemIntegrity(unittest.IsolatedAsyncioTestCase):
     def test_calculator_default_param(self):
         val = calculate_expression("10 * 5 + 2")
         self.assertEqual(val, 52)
+
+    def test_tools_has_level_role_method(self):
+        from cogs.tools import Tools
+        self.assertTrue(hasattr(Tools, "ensure_and_assign_level_role"))
+        self.assertTrue(hasattr(Tools, "on_member_join"))
+        self.assertTrue(hasattr(Tools, "rank"))
+
+    async def test_pro_keys_crud(self):
+        test_key = "HERO-PRO-TEST-12345"
+        await self.bot.db.add_pro_key(test_key, 30)
+        unused = await self.bot.db.get_pro_keys()
+        self.assertTrue(any(r["key"] == test_key for r in unused))
+        # Test use
+        used_ok = await self.bot.db.use_pro_key(test_key, 123456, 999999)
+        self.assertTrue(used_ok)
+        unused_after = await self.bot.db.get_pro_keys()
+        self.assertFalse(any(r["key"] == test_key for r in unused_after))
