@@ -72,6 +72,8 @@ class DiscordControl(commands.Cog):
         # 預設狀態
         self.bot.is_active_node = True
         self.coordination_msg = None
+        self._view = CoordinationView(self)
+        self._view_registered = False
         
         # 如果有設定 COORDINATION_CHANNEL_ID，才啟動主備控制
         if self.server_id and self.channel_id:
@@ -398,7 +400,7 @@ class DiscordControl(commands.Cog):
                 message = await self.get_coordination_message(channel)
                 self.coordination_msg = message
                 
-            view = CoordinationView(self)
+            view = self._view
             
             if not message:
                 # 建立新訊息
@@ -417,12 +419,15 @@ class DiscordControl(commands.Cog):
                     await message.pin()
                 except Exception:
                     pass
-                # 註冊 view 監聽器
-                self.bot.add_view(view)
+                # 僅註冊一次持久 view 監聽器，避免每 15 秒重複掛載導致記憶體洩漏
+                if not self._view_registered:
+                    self.bot.add_view(view)
+                    self._view_registered = True
                 data = initial_data
             else:
-                # 註冊 view 監聽器，確保重啟後按鈕仍有用
-                self.bot.add_view(view)
+                if not self._view_registered:
+                    self.bot.add_view(view)
+                    self._view_registered = True
                 # 解析現有狀態
                 data = self.parse_footer_data(message)
 

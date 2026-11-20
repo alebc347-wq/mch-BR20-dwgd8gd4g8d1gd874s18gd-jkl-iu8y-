@@ -180,6 +180,120 @@ class TestSecurityVulnerabilities(unittest.TestCase):
 
         asyncio.run(run_economy_test())
 
+    # ── 4. Pro / Ultra 金鑰併發重複兌換競態條件測試 ──
+    def test_pro_ultra_key_concurrent_redemption(self):
+        """測試同時併發兌換同一組 Pro / Ultra 金鑰時，僅有一次可成功激活"""
+        import tempfile
+
+        async def run_key_race_test():
+            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+            tmp.close()
+            db = Database(db_path=tmp.name)
+            await db.connect()
+            try:
+                await db.add_pro_key("RACE-PRO-KEY", 30)
+                pro_results = await asyncio.gather(
+                    *(db.use_pro_key("RACE-PRO-KEY", guild_id=100 + i, user_id=200 + i) for i in range(5))
+                )
+                self.assertEqual(sum(1 for r in pro_results if r), 1)
+
+                await db.add_ultra_key("RACE-ULTRA-KEY", 30)
+                ultra_results = await asyncio.gather(
+                    *(db.use_ultra_key("RACE-ULTRA-KEY", guild_id=300 + i, user_id=400 + i) for i in range(5))
+                )
+                self.assertEqual(sum(1 for r in ultra_results if r), 1)
+            finally:
+                await db.close()
+                if os.path.exists(tmp.name):
+                    os.remove(tmp.name)
+
+        asyncio.run(run_key_race_test())
+
+    # ── 5. 全域管理權限提權防護測試 (AntiPlagiarism & RestMode) ──
+    def test_global_admin_privilege_isolation(self):
+        """測試一般伺服器管理員不可操作全域黑名單與全域休息模式"""
+        from unittest.mock import AsyncMock, MagicMock
+        from cogs.anti_plagiarism import AntiPlagiarism
+        from cogs.rest_mode import RestMode
+
+        async def run_priv_test():
+            mock_bot = MagicMock()
+            mock_bot.is_owner = AsyncMock(return_value=False)
+            mock_bot.db = MagicMock()
+
+            fake_guild_admin = MagicMock()
+            fake_guild_admin.id = 987654321
+            fake_guild_admin.guild_permissions.administrator = True
+
+            ap = AntiPlagiarism(mock_bot)
+            self.assertFalse(await ap._is_global_admin(fake_guild_admin))
+
+            rm = RestMode.__new__(RestMode)
+            rm.bot = mock_bot
+            self.assertFalse(await rm._has_permission(fake_guild_admin))
+
+        asyncio.run(run_priv_test())
+
+    # ── 6. 每日簽到併發雙重領取防護測試 ──
+    def test_economy_daily_concurrent_double_claim(self):
+        """測試併發多次呼叫每日簽到時，僅有一次能成功領取"""
+        import tempfile
+        from unittest.mock import MagicMock
+        from cogs.economy import Economy
+
+        async def run_daily_test():
+            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+            tmp.close()
+            db = Database(db_path=tmp.name)
+            await db.connect()
+            try:
+                mock_bot = MagicMock()
+                mock_bot.db = db
+                eco = Economy(mock_bot)
+                await eco.cog_load()
+
+                results = await asyncio.gather(
+                    *(eco._claim_daily(1111, 2222, "2026-11-20", 100) for _ in range(5))
+                )
+                self.assertEqual(sum(1 for r in results if r), 1)
+                self.assertEqual(await eco._get_balance(1111, 2222), 100)
+            finally:
+                await db.close()
+                if os.path.exists(tmp.name):
+                    os.remove(tmp.name)
+
+        asyncio.run(run_daily_test())
+
+    # ── 7. 3.0 開發者上傳 Zip Slip 路徑穿越防護與清暫存引擎測試 ──
+    def test_dev_upload_zip_slip_and_cleaner(self):
+        """測試 _safe_extract_path 攔截路徑穿越，且終極清暫存不誤刪 .db/.json"""
+        import tempfile
+        from cogs.auto_update import _safe_extract_path
+        from utils.cleaner import run_sync_cleanup
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. Zip Slip 攔截驗證
+            self.assertIsNone(_safe_extract_path(tmpdir, "../evil.py"))
+            self.assertIsNone(_safe_extract_path(tmpdir, "../../etc/passwd"))
+            self.assertIsNone(_safe_extract_path(tmpdir, "/abs/path.py"))
+            self.assertIsNotNone(_safe_extract_path(tmpdir, "cogs/general.py"))
+
+            # 2. 清暫存保護核心 .db / .json，精準刪除暫存檔
+            data_dir = os.path.join(tmpdir, "data")
+            os.makedirs(data_dir, exist_ok=True)
+            keep_db = os.path.join(data_dir, "bot.db")
+            keep_json = os.path.join(data_dir, "settings.json")
+            junk_tmp = os.path.join(data_dir, "voice_cache.mp3")
+            for p in (keep_db, keep_json, junk_tmp):
+                with open(p, "wb") as f:
+                    f.write(b"12345678")
+
+            report = run_sync_cleanup(root=tmpdir, include_system_caches=False)
+            self.assertTrue(os.path.exists(keep_db))
+            self.assertTrue(os.path.exists(keep_json))
+            self.assertFalse(os.path.exists(junk_tmp))
+            self.assertGreaterEqual(report.removed_files, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

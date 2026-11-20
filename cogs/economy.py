@@ -16,6 +16,7 @@ from config import Colors
 from utils.embeds import EmbedFactory
 
 
+@app_commands.guild_only()
 class Economy(commands.GroupCog, name="economy", description="💰 經濟與金幣系統"):
     """經濟系統 — 金幣、簽到、轉帳、排行榜"""
 
@@ -97,23 +98,35 @@ class Economy(commands.GroupCog, name="economy", description="💰 經濟與金�
         embed.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
+    async def _claim_daily(self, user_id: int, guild_id: int, today: str, reward: int) -> bool:
+        """原子化每日簽到，防範併發重複領取"""
+        # 1. 確保使用者紀錄存在
+        await self.bot.db.db.execute(
+            "INSERT OR IGNORE INTO economy (user_id, guild_id, balance, last_daily) VALUES (?, ?, 0, '')",
+            (user_id, guild_id),
+        )
+        # 2. 原子條件更新：只有 last_daily != today 才加錢與更新日期
+        cursor = await self.bot.db.db.execute(
+            "UPDATE economy SET balance = balance + ?, last_daily = ? WHERE user_id = ? AND guild_id = ? AND last_daily != ?",
+            (reward, today, user_id, guild_id, today),
+        )
+        await self.bot.db.db.commit()
+        return cursor.rowcount > 0
+
     # ── 每日簽到 ──
     @app_commands.command(name="daily", description="📅 每日簽到領取金幣")
     async def daily(self, interaction: discord.Interaction):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        last = await self._get_last_daily(interaction.user.id, interaction.guild_id)
+        reward = random.randint(50, 200)
+        claimed = await self._claim_daily(interaction.user.id, interaction.guild_id, today, reward)
 
-        if last == today:
+        if not claimed:
             embed = discord.Embed(
                 title="📅 已簽到",
                 description="你今天已經簽到過了！請明天再來吧 ✨",
                 color=Colors.WARNING,
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        reward = random.randint(50, 200)
-        await self._update_balance(interaction.user.id, interaction.guild_id, reward)
-        await self._set_last_daily(interaction.user.id, interaction.guild_id, today)
 
         bal = await self._get_balance(interaction.user.id, interaction.guild_id)
         embed = discord.Embed(
@@ -218,10 +231,11 @@ class Economy(commands.GroupCog, name="economy", description="💰 經濟與金�
             ("🎮 遊戲測試員", "測試了新遊戲 5 小時"),
         ]
 
+        # 先寫入冷卻時間再執行資料庫寫入，防範併發呼叫繞過冷卻
+        self._work_cooldowns[interaction.user.id] = now
         job, desc = random.choice(jobs)
         earnings = random.randint(30, 150)
         await self._update_balance(interaction.user.id, interaction.guild_id, earnings)
-        self._work_cooldowns[interaction.user.id] = now
 
         bal = await self._get_balance(interaction.user.id, interaction.guild_id)
         embed = discord.Embed(

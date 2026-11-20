@@ -15,7 +15,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "bot.
 class Database:
     """非同步 SQLite 資料庫管理器"""
 
-    def __init__(self):
+    def __init__(self, db_path: str | None = None):
+        self.db_path: str = db_path or DB_PATH
         self.db: aiosqlite.Connection | None = None
 
     def _early_disk_scrub(self):
@@ -32,20 +33,23 @@ class Database:
 
     async def connect(self):
         """連接資料庫並建立表 (含啟動自動磁碟深度清理與防 I/O 錯誤容災)"""
-        # 1. 啟動連線前自動深度清理磁碟暫存與垃圾檔案
-        self._early_disk_scrub()
+        # 1. 啟動連線前自動深度清理磁碟暫存與垃圾檔案 (僅針對預設資料庫路徑)
+        if self.db_path == DB_PATH:
+            self._early_disk_scrub()
 
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
 
         # 2. 若資料庫檔案異常損壞為 0 byte，自動移除以利重新初始化
-        if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) == 0:
+        if self.db_path != ":memory:" and os.path.exists(self.db_path) and os.path.getsize(self.db_path) == 0:
             try:
-                os.remove(DB_PATH)
+                os.remove(self.db_path)
                 print("🧹 已自動清理 0-byte 損壞的空資料庫檔案")
             except Exception:
                 pass
 
-        self.db = await aiosqlite.connect(DB_PATH)
+        self.db = await aiosqlite.connect(self.db_path)
         self.db.row_factory = aiosqlite.Row
 
         # 3. 強制使用純記憶體日誌與記憶體暫存 (MEMORY journal & temp_store)，徹底避免實體磁碟 I/O 錯誤
@@ -687,14 +691,23 @@ class Database:
 
     @staticmethod
     def _calc_expires_at(existing_expires_str: str | None, safe_days: int, now: datetime) -> str:
-        """計算過期時間（若未過期則自動疊加延長）"""
+        """計算過期時間（若未過期則自動疊加延長，並防範 datetime 溢位）"""
         from datetime import timedelta
-        expires_at = now + timedelta(days=safe_days)
+        max_dt = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        now_utc = now.replace(tzinfo=timezone.utc)
+        try:
+            expires_at = now_utc + timedelta(days=safe_days)
+        except OverflowError:
+            expires_at = max_dt
+
         if existing_expires_str:
             try:
                 ext_expires = datetime.fromisoformat(existing_expires_str).replace(tzinfo=timezone.utc)
-                if ext_expires > now.replace(tzinfo=timezone.utc):
-                    expires_at = ext_expires + timedelta(days=safe_days)
+                if ext_expires > now_utc:
+                    try:
+                        expires_at = ext_expires + timedelta(days=safe_days)
+                    except OverflowError:
+                        expires_at = max_dt
             except Exception:
                 pass
         return expires_at.isoformat()
@@ -719,12 +732,17 @@ class Database:
             return await cursor.fetchall()
 
     async def use_pro_key(self, key: str, guild_id: int, user_id: int) -> bool:
-        """使用金鑰激活該伺服器的 Pro 權限"""
+        """原子化使用金鑰激活該伺服器的 Pro 權限（防範併發重複兌換）"""
         async with self.db.execute("SELECT expires_in_days FROM pro_keys WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             if not row:
                 return False
             expires_in_days = row[0]
+
+        # 原子刪除未使用的金鑰，確保併發請求僅有一次能成功消耗金鑰
+        del_cursor = await self.db.execute("DELETE FROM pro_keys WHERE key = ?", (key,))
+        if del_cursor.rowcount == 0:
+            return False
 
         now = datetime.now(timezone.utc)
         safe_days = self._parse_safe_days(expires_in_days)
@@ -734,10 +752,9 @@ class Database:
             expires_at = self._calc_expires_at(existing[0] if existing else None, safe_days, now)
 
         await self.db.execute(
-            "INSERT INTO used_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO used_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
             (key, guild_id, user_id, now.isoformat())
         )
-        await self.db.execute("DELETE FROM pro_keys WHERE key = ?", (key,))
         await self.db.execute(
             "INSERT OR REPLACE INTO pro_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
             (guild_id, user_id, now.isoformat(), expires_at)
@@ -784,12 +801,17 @@ class Database:
             return await cursor.fetchall()
 
     async def use_ultra_key(self, key: str, guild_id: int, user_id: int) -> bool:
-        """使用金鑰激活該伺服器的 Ultra 權限"""
+        """原子化使用金鑰激活該伺服器的 Ultra 權限（防範併發重複兌換）"""
         async with self.db.execute("SELECT expires_in_days FROM ultra_keys WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             if not row:
                 return False
             expires_in_days = row[0]
+
+        # 原子刪除未使用的金鑰，確保併發請求僅有一次能成功消耗金鑰
+        del_cursor = await self.db.execute("DELETE FROM ultra_keys WHERE key = ?", (key,))
+        if del_cursor.rowcount == 0:
+            return False
 
         now = datetime.now(timezone.utc)
         safe_days = self._parse_safe_days(expires_in_days)
@@ -799,10 +821,9 @@ class Database:
             expires_at = self._calc_expires_at(existing[0] if existing else None, safe_days, now)
 
         await self.db.execute(
-            "INSERT INTO used_ultra_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO used_ultra_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
             (key, guild_id, user_id, now.isoformat())
         )
-        await self.db.execute("DELETE FROM ultra_keys WHERE key = ?", (key,))
         await self.db.execute(
             "INSERT OR REPLACE INTO ultra_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
             (guild_id, user_id, now.isoformat(), expires_at)
@@ -829,91 +850,6 @@ class Database:
         """獲取所有已使用的 Ultra 金鑰記錄"""
         async with self.db.execute("SELECT * FROM used_ultra_keys ORDER BY used_at DESC") as cursor:
             return await cursor.fetchall()
-
-    async def use_ultra_key(self, key: str, guild_id: int, user_id: int) -> bool:
-        """使用金鑰激活該伺服器的 Ultra 權限"""
-        # 1. 檢查金鑰是否存在於未使用的列表中
-        async with self.db.execute("SELECT expires_in_days FROM ultra_keys WHERE key = ?", (key,)) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                return False
-            expires_in_days = row[0]
-
-        now = datetime.now(timezone.utc)
-        now_str = now.isoformat()
-        
-        # 計算過期時間，限制最大天數為 365000 (約 1000 年) 以防 OverflowError/TypeError
-        from datetime import timedelta
-        if expires_in_days is None:
-            safe_days = 365000
-        else:
-            try:
-                safe_days = min(int(expires_in_days), 365000)
-            except Exception:
-                safe_days = 30
-        
-        expires_at = (now + timedelta(days=safe_days)).isoformat()
-
-        # 2. 插入使用記錄
-        await self.db.execute(
-            "INSERT INTO used_ultra_keys (key, guild_id, user_id, used_at) VALUES (?, ?, ?, ?)",
-            (key, guild_id, user_id, now_str)
-        )
-
-        # 3. 刪除未使用的金鑰
-        await self.db.execute("DELETE FROM ultra_keys WHERE key = ?", (key,))
-
-        # 4. 更新/插入伺服器 Ultra 狀態
-        async with self.db.execute("SELECT expires_at FROM ultra_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
-            existing = await cursor.fetchone()
-            if existing:
-                try:
-                    ext_expires = datetime.fromisoformat(existing[0])
-                    if ext_expires.replace(tzinfo=timezone.utc) > now.replace(tzinfo=timezone.utc):
-                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=safe_days)).isoformat()
-                except Exception:
-                    pass
-
-        await self.db.execute(
-            "INSERT OR REPLACE INTO ultra_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
-            (guild_id, user_id, now_str, expires_at)
-        )
-
-        await self.db.commit()
-        return True
-
-    async def activate_ultra_guild_direct(self, guild_id: int, user_id: int, expires_in_days: int = 30) -> None:
-        """直接激活該伺服器的 Ultra 權限 (用於訂閱成功)"""
-        now = datetime.now(timezone.utc)
-        now_str = now.isoformat()
-        
-        from datetime import timedelta
-        if expires_in_days is None:
-            safe_days = 365000
-        else:
-            try:
-                safe_days = min(int(expires_in_days), 365000)
-            except Exception:
-                safe_days = 30
-
-        expires_at = (now + timedelta(days=safe_days)).isoformat()
-
-        # 如果已經是 Ultra 且未過期，則延長時間，否則從現在開始算
-        async with self.db.execute("SELECT expires_at FROM ultra_guilds WHERE guild_id = ?", (guild_id,)) as cursor:
-            existing = await cursor.fetchone()
-            if existing:
-                try:
-                    ext_expires = datetime.fromisoformat(existing[0])
-                    if ext_expires.replace(tzinfo=timezone.utc) > now.replace(tzinfo=timezone.utc):
-                        expires_at = (ext_expires.replace(tzinfo=timezone.utc) + timedelta(days=safe_days)).isoformat()
-                except Exception:
-                    pass
-
-        await self.db.execute(
-            "INSERT OR REPLACE INTO ultra_guilds (guild_id, activated_by, activated_at, expires_at) VALUES (?, ?, ?, ?)",
-            (guild_id, user_id, now_str, expires_at)
-        )
-        await self.db.commit()
 
     async def is_guild_ultra(self, guild_id: int) -> bool:
         """檢查該伺服器是否擁有有效的 Ultra 權限"""

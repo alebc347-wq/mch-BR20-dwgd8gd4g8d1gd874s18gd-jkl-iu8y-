@@ -2,6 +2,7 @@ import os
 import json
 import time
 import asyncio
+from collections import deque
 import aiohttp
 import discord
 from discord import app_commands
@@ -11,6 +12,7 @@ from config import Colors
 
 CWA_API_KEY = os.getenv("CWA_API_KEY", "")
 DISASTER_CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "disaster_channels.json")
+MAX_PROCESSED_IDS = 500
 
 def _load_disaster_config() -> dict:
     """載入天災通知頻道設定 {guild_id_str: channel_id_int}"""
@@ -34,11 +36,30 @@ class Disaster(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.config: dict = _load_disaster_config()
-        self.processed_ids: set = set()
+        self.processed_ids: set[str] = set()
+        self._processed_order: deque[str] = deque()
+        self._initialized: bool = False
+        self._session: aiohttp.ClientSession | None = None
         self.disaster_monitor.start()
 
-    def cog_unload(self):
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=7))
+        return self._session
+
+    def _mark_processed(self, event_id: str) -> None:
+        if event_id in self.processed_ids:
+            return
+        self.processed_ids.add(event_id)
+        self._processed_order.append(event_id)
+        while len(self._processed_order) > MAX_PROCESSED_IDS:
+            oldest = self._processed_order.popleft()
+            self.processed_ids.discard(oldest)
+
+    async def cog_unload(self):
         self.disaster_monitor.cancel()
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 多源地震 API 監測與抓取
@@ -48,7 +69,7 @@ class Disaster(commands.Cog):
         """從 USGS 抓取台灣區域 (緯度 20~26.5, 經度 118~124.5) 最新地震"""
         url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&minlatitude=20&maxlatitude=26.5&minlongitude=118&maxlongitude=124.5&minmagnitude=2.5&limit=10"
         try:
-            async with session.get(url, timeout=7) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=7)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     results = []
@@ -56,20 +77,21 @@ class Disaster(commands.Cog):
                         props = feat.get("properties", {})
                         geom = feat.get("geometry", {}).get("coordinates", [0, 0, 0])
                         event_id = f"usgs_{feat.get('id')}"
-                        mag = props.get("mag", 0.0)
+                        mag = float(props.get("mag") or 0.0)
                         place = props.get("place", "台灣周邊海域")
                         eq_time = datetime.fromtimestamp(props.get("time", 0)/1000, tz=timezone.utc)
                         depth = geom[2] if len(geom) > 2 else 0
 
                         results.append({
                             "id": event_id,
-                            "title": f"M {mag} - {place}",
+                            "title": f"M {mag:.1f} - {place}",
                             "magnitude": mag,
                             "location": place,
                             "depth": f"{depth:.1f} km",
                             "time": eq_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
                             "url": props.get("url", "https://earthquake.usgs.gov/"),
                             "source": "USGS 地震監測網",
+                            "image_url": "",
                             "lat": geom[1],
                             "lon": geom[0]
                         })
@@ -78,73 +100,97 @@ class Disaster(commands.Cog):
             print(f"⚠️ 抓取 USGS 台灣地震資料失敗: {e}")
         return []
 
-    async def fetch_cwa_earthquakes(self, session: aiohttp.ClientSession) -> list[dict]:
-        """從 CWA (中央氣象署) 抓取地震報告 (若設定有效 API Key)"""
+    async def _fetch_cwa_dataset(self, session: aiohttp.ClientSession, dataset_id: str, label: str) -> list[dict]:
+        """從指定 CWA 資料集 (E-A0015-001 / E-A0015-002) 抓取地震報告"""
         if not CWA_API_KEY:
             return []
-        url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001?Authorization={CWA_API_KEY}"
+        url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&limit=5"
         try:
-            async with session.get(url, timeout=7) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=7)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     earthquakes = data.get("records", {}).get("Earthquake", [])
                     results = []
                     for eq in earthquakes:
                         eq_info = eq.get("EarthquakeInfo", {})
-                        eq_num = eq.get("EarthquakeNo", f"cwa_{time.time()}")
-                        mag = float(eq_info.get("EarthquakeMagnitude", {}).get("MagnitudeValue", 0))
+                        eq_num = eq.get("EarthquakeNo", f"{dataset_id}_{int(time.time())}")
+                        mag = float(eq_info.get("EarthquakeMagnitude", {}).get("MagnitudeValue", 0) or 0)
                         loc = eq_info.get("Epicenter", {}).get("Location", "台灣地區")
                         depth = eq_info.get("FocalDepth", 0)
                         eq_time = eq_info.get("OriginTime", "")
                         web_url = eq.get("Web", "https://www.cwa.gov.tw/")
+                        image_url = eq.get("ReportImageURI", "")
 
                         results.append({
-                            "id": f"cwa_{eq_num}",
-                            "title": f"M {mag} 顯著有感地震",
+                            "id": f"cwa_{dataset_id}_{eq_num}",
+                            "title": f"M {mag:.1f} {label}",
                             "magnitude": mag,
                             "location": loc,
                             "depth": f"{depth} km",
                             "time": eq_time,
                             "url": web_url,
-                            "source": "交通部中央氣象署 CWA",
+                            "source": f"交通部中央氣象署 CWA ({dataset_id})",
+                            "image_url": image_url,
                             "lat": 0,
                             "lon": 0
                         })
                     return results
         except Exception as e:
-            print(f"⚠️ 抓取 CWA 地震資料失敗: {e}")
+            print(f"⚠️ 抓取 CWA {dataset_id} 地震資料失敗: {e}")
         return []
+
+    async def fetch_cwa_earthquakes(self, session: aiohttp.ClientSession) -> list[dict]:
+        """並行抓取 CWA 顯著有感 (E-A0015-001) 與小區域有感 (E-A0015-002) 雙重資料集"""
+        if not CWA_API_KEY:
+            return []
+        r1, r2 = await asyncio.gather(
+            self._fetch_cwa_dataset(session, "E-A0015-001", "顯著有感地震"),
+            self._fetch_cwa_dataset(session, "E-A0015-002", "小區域有感地震"),
+            return_exceptions=True,
+        )
+        results = []
+        if isinstance(r1, list):
+            results.extend(r1)
+        if isinstance(r2, list):
+            results.extend(r2)
+        return results
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 自動輪詢任務與廣播
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    @tasks.loop(seconds=15)
+    @tasks.loop(seconds=10)
     async def disaster_monitor(self):
-        """每 15 秒自動輪詢多源地震數據"""
+        """每 10 秒並行輪詢多源地震數據 (USGS + CWA E-A0015-001 / E-A0015-002)"""
         # 只在 Active 節點執行天災輪詢，防止兩台主機重複推播
         if not getattr(self.bot, "is_active_node", True):
             return
 
-        async with aiohttp.ClientSession() as session:
-            # 優先讀取 USGS 台灣區域，必要時補充 CWA
-            usgs_events = await self.fetch_usgs_taiwan_earthquakes(session)
-            cwa_events = await self.fetch_cwa_earthquakes(session)
-            all_events = usgs_events + cwa_events
+        session = await self._get_session()
+        usgs_res, cwa_res = await asyncio.gather(
+            self.fetch_usgs_taiwan_earthquakes(session),
+            self.fetch_cwa_earthquakes(session),
+            return_exceptions=True,
+        )
+        all_events = []
+        if isinstance(usgs_res, list):
+            all_events.extend(usgs_res)
+        if isinstance(cwa_res, list):
+            all_events.extend(cwa_res)
 
-            for eq in all_events:
-                eid = eq["id"]
-                if eid in self.processed_ids:
-                    continue
+        if not self._initialized:
+            for item in all_events:
+                self._mark_processed(item["id"])
+            if all_events:
+                self._initialized = True
+            return
 
-                # 若第一次啟動，紀錄歷史 ID 防止歷史舊案爆發式推播
-                if not self.processed_ids and len(all_events) > 0:
-                    for item in all_events:
-                        self.processed_ids.add(item["id"])
-                    break
-
-                self.processed_ids.add(eid)
-                await self.broadcast_earthquake(eq)
+        for eq in all_events:
+            eid = eq["id"]
+            if eid in self.processed_ids:
+                continue
+            self._mark_processed(eid)
+            await self.broadcast_earthquake(eq)
 
     @disaster_monitor.before_loop
     async def before_monitor(self):
@@ -179,6 +225,8 @@ class Disaster(commands.Cog):
         embed.add_field(name="📉 震源深度", value=f"`{eq['depth']}`", inline=True)
         embed.add_field(name="🕒 發震時間", value=f"`{eq['time']}`", inline=False)
         embed.add_field(name="📡 資料來源", value=f"`{eq['source']}`", inline=True)
+        if eq.get("image_url"):
+            embed.set_image(url=eq["image_url"])
 
         embed.set_footer(text="🛡️ 倉鼠勇者 天災防衛監測中心 | 自動防偽認證")
 
@@ -241,7 +289,7 @@ class Disaster(commands.Cog):
             color=Colors.SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="監控狀態", value="🟢 100% 運作中 (每 15 秒自動輪詢)", inline=True)
+        embed.add_field(name="監控狀態", value="🟢 100% 運作中 (每 10 秒自動輪詢)", inline=True)
         embed.add_field(name="目前啟用頻道數", value=f"`{len(self.config)}` 個伺服器", inline=True)
         embed.set_footer(text="🛡️ 倉鼠勇者 天災防衛監測中心")
 
@@ -250,8 +298,8 @@ class Disaster(commands.Cog):
     @disaster_group.command(name="latest", description="查詢台灣及全球最新地震紀錄")
     async def latest_slash(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        async with aiohttp.ClientSession() as session:
-            events = await self.fetch_usgs_taiwan_earthquakes(session)
+        session = await self._get_session()
+        events = await self.fetch_usgs_taiwan_earthquakes(session)
 
         if not events:
             await interaction.followup.send("ℹ️ 目前無最新地震資料紀錄。", ephemeral=True)

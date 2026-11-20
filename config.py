@@ -11,6 +11,7 @@ env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=env_path, override=True)
 
 # ─── Bot 基本設定 ───────────────────────────────────────────
+BOT_VERSION = "3.0.0"
 BOT_TOKEN = os.getenv("DISCORD_TOKEN", "")
 BOT_PREFIX = os.getenv("BOT_PREFIX", ".")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -20,14 +21,16 @@ LAVALINK_HOST = os.getenv("LAVALINK_HOST", "lavalinkv4.serenetia.com")
 LAVALINK_PORT = int(os.getenv("LAVALINK_PORT", "443"))
 LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "https://seretia.link/discord")
 
-# ─── 品牌配色 (Hex → int) ───────────────────────────────────
+# ─── 品牌配色 (3.0 深石板 × 暖琥珀 / Pro 金箔設計系統) ──────
 class Colors:
-    """統一的 Embed 色彩系統"""
-    PRIMARY    = 0x5865F2   # Discord 藍紫 — 一般/資訊
-    SUCCESS    = 0x57F287   # 翠綠 — 成功操作
-    WARNING    = 0xFEE75C   # 琥珀黃 — 警告
-    ERROR      = 0xED4245   # 猩紅 — 錯誤/封禁
-    INFO       = 0x5865F2   # 藍紫 — 資訊
+    """倉鼠勇者 3.0 統一 Embed 色彩系統"""
+    PRIMARY    = 0xF5A623   # 暖琥珀 — 3.0 品牌主色
+    PRO        = 0xE8B931   # Pro 金箔 — 疾速方案
+    SURFACE    = 0x191D26   # 深石板 — 卡片基底
+    SUCCESS    = 0x2ECC71   # 翠綠 — 成功/健康
+    WARNING    = 0xF39C12   # 琥珀黃 — 警告
+    ERROR      = 0xE05A47   # 珊瑚紅 — 錯誤/封禁
+    INFO       = 0xF5A623   # 暖琥珀 — 資訊
     MUSIC      = 0xB967FF   # 夢幻紫 — 音樂系統
     GAME       = 0x00D4AA   # 青色 — 遊戲系統
     GIVEAWAY   = 0xFF6B9D   # 粉紅 — 抽獎系統

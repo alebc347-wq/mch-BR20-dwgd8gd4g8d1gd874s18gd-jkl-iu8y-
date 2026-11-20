@@ -68,9 +68,11 @@ async def check_node_online_async(uri: str, password: str = "", timeout: float =
             headers['Authorization'] = password
 
         target_url = f"{uri.rstrip('/')}/v4/websocket"
-        async with aiohttp.ClientSession() as session:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        ws_timeout = aiohttp.ClientWSTimeout(ws_close=timeout) if hasattr(aiohttp, "ClientWSTimeout") else timeout
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
             try:
-                async with session.ws_connect(target_url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as ws:
+                async with session.ws_connect(target_url, headers=headers, timeout=ws_timeout) as ws:
                     return True
             except aiohttp.WSServerHandshakeError as e:
                 if e.status in (101, 401, 403):
@@ -1045,19 +1047,13 @@ class Music(commands.Cog, name="Music"):
         self.controller_views: dict[int, discord.ui.View] = {}  # guild_id -> 面板 View 參照
         self.controller_owners: dict[int, int] = {}  # guild_id -> owner_id (使用指令的人)
         self._voice_connect_locks: dict[int, asyncio.Lock] = {}  # guild_id -> 連線鎖
+        self._init_task: asyncio.Task | None = None
         self.controller_updater.start()
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
-            return
-
-        if "聽歌" in message.content:
-            view = AskListenView(self, message.author.id)
-            await message.reply("好啊好啊你要聽歌的話", view=view)
 
     async def cog_unload(self):
         self.controller_updater.cancel()
+        if self._init_task and not self._init_task.done():
+            self._init_task.cancel()
         try:
             await wavelink.Pool.close()
         except Exception:
@@ -1077,7 +1073,7 @@ class Music(commands.Cog, name="Music"):
 
     async def cog_load(self):
         """Cog 載入時，排程等待 Bot 登入完成後連接 Lavalink 節點池"""
-        asyncio.create_task(self._init_lavalink_nodes())
+        self._init_task = asyncio.create_task(self._init_lavalink_nodes())
 
     async def _init_lavalink_nodes(self):
         """等待 Bot 登入完成後非同步探測並連接 Lavalink 節點"""

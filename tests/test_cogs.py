@@ -5,20 +5,34 @@ import unittest
 import asyncio
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from main import ProBot
 from cogs.calculator import calculate_expression
+from utils.embeds import EmbedFactory
 
 class TestSystemIntegrity(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.bot = ProBot()
+        self._tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self._tmp_db.close()
+        self.bot = ProBot(db_path=self._tmp_db.name)
         self.bot.wait_until_ready = lambda: asyncio.sleep(0)
         await self.bot.db.connect()
 
     async def asyncTearDown(self):
+        for ext in list(self.bot.extensions.keys()):
+            try:
+                await self.bot.unload_extension(ext)
+            except Exception:
+                pass
         await self.bot.db.close()
+        if os.path.exists(self._tmp_db.name):
+            try:
+                os.remove(self._tmp_db.name)
+            except OSError:
+                pass
 
     async def test_all_29_cogs_load(self):
         cog_files = [
@@ -73,3 +87,61 @@ class TestSystemIntegrity(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(used_ok)
         unused_after = await self.bot.db.get_pro_keys()
         self.assertFalse(any(r["key"] == test_key for r in unused_after))
+
+    def test_embed_factory_without_icons(self):
+        embed = EmbedFactory._base_embed(
+            title="Test",
+            description="Body",
+            author_name="Tester",
+            footer_text="Footer",
+        )
+        self.assertEqual(embed.author.name, "Tester")
+        self.assertEqual(embed.footer.text, "Footer")
+
+    async def test_3_0_visual_cards_render(self):
+        """驗證 3.0 全部 7 款程式化 PNG 視覺卡片皆可正常快速渲染"""
+        from utils.visual_cards import (
+            render_help_banner,
+            render_plan_card,
+            render_ping_card,
+            render_health_card,
+            render_profile_card,
+            render_server_card,
+            render_version_card,
+        )
+        png_sig = b"\x89PNG\r\n\x1a\n"
+        cards = [
+            await render_help_banner(True, 10, 29, 42.5),
+            await render_plan_card("測試伺服器", False),
+            await render_ping_card(38.2, 0.45, True),
+            await render_health_card(40.0, 0.5, True, "ACTIVE (wispbyte-1)", True, False, "2/4 在線", 29, "1時 20分", 12),
+            await render_profile_card("倉鼠勇者", "hamster", 123456, True, ["團長", "開發者"], "2026-01-01", "2025-01-01", None),
+            await render_server_card("測試群組", 999999, False, 128, 42, 15, 4, 12, 2, None),
+            await render_version_card("3.0.0", True),
+        ]
+        for buf in cards:
+            data = buf.getvalue()
+            self.assertTrue(data.startswith(png_sig))
+            self.assertGreater(len(data), 1000)
+
+    async def test_3_0_speed_tier_free_vs_pro(self):
+        """驗證 3.0 雙方案速率分流：免費版 3s 節流 vs Pro 版 0s 疾速連發"""
+        from utils.speed_tier import SpeedTierManager
+        mgr = SpeedTierManager()
+        # 免費伺服器：第一次通過，第二次立即被節流
+        ok1, wait1, is_pro1 = await mgr.check_rate_limit(self.bot.db, guild_id=5001, user_id=7001)
+        self.assertTrue(ok1)
+        self.assertFalse(is_pro1)
+        ok2, wait2, is_pro2 = await mgr.check_rate_limit(self.bot.db, guild_id=5001, user_id=7001)
+        self.assertFalse(ok2)
+        self.assertGreater(wait2, 0.0)
+
+        # 啟用 Pro 後清除快取 -> 0 秒極速連發
+        await self.bot.db.add_pro_key("SPEED-PRO-30", 30)
+        await self.bot.db.use_pro_key("SPEED-PRO-30", guild_id=5001, user_id=7001)
+        mgr.invalidate_guild(5001)
+        for _ in range(5):
+            ok, wait, is_pro = await mgr.check_rate_limit(self.bot.db, guild_id=5001, user_id=7001)
+            self.assertTrue(ok)
+            self.assertTrue(is_pro)
+            self.assertEqual(wait, 0.0)

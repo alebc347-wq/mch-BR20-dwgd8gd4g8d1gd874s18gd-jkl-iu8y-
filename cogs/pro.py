@@ -12,6 +12,8 @@ from typing import Optional
 
 from config import Colors, Emoji
 from utils.embeds import EmbedFactory
+from utils.speed_tier import speed_tier
+from utils.visual_cards import render_plan_card
 
 
 class ProActivationModal(discord.ui.Modal, title="輸入 Pro 激活碼"):
@@ -34,17 +36,22 @@ class ProActivationModal(discord.ui.Modal, title="輸入 Pro 激活碼"):
         
         success = await db.use_pro_key(key, interaction.guild_id, interaction.user.id)
         if success:
+            # 立即清除 Pro 快取，0 ms 生效疾速通道
+            speed_tier.invalidate_guild(interaction.guild_id)
+            img_buf = await render_plan_card(interaction.guild.name, True, "即時生效")
+            file = discord.File(img_buf, filename="plan_activated.png")
             embed = discord.Embed(
-                title="✨ 恭喜！Pro 專業版已成功啟用！",
+                title="⚡ Pro 疾速方案已啟用",
                 description=(
-                    f"🎉 您的伺服器 **{interaction.guild.name}** 已成功激活 Pro 權限！\n"
-                    f"所有的 CPU 密集型高耗能功能（例如 24/7 模式、超長歌單解析）現已解鎖。\n\n"
-                    f"👥 啟用者: {interaction.user.mention}\n"
-                    f"📅 啟用時間: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} (UTC)"
+                    f"伺服器 **{interaction.guild.name}** 已切換至 **PRO 疾速通道**。\n"
+                    f"所有指令冷卻已解除（0 秒連發），並同步解鎖 24/7 音樂與無限歌單。\n\n"
+                    f"啟用者：{interaction.user.mention}\n"
+                    f"啟用時間：`{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC`"
                 ),
-                color=0xFFD700
+                color=Colors.PRO,
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            embed.set_image(url="attachment://plan_activated.png")
+            await interaction.followup.send(embed=embed, file=file, ephemeral=True)
         else:
             await interaction.followup.send(
                 embed=EmbedFactory.error("無效的金鑰", "您輸入的激活碼不存在或已被使用。"),
@@ -92,85 +99,73 @@ class Pro(commands.Cog):
             return False
 
         db = interaction.client.db
-        is_pro = await db.is_guild_pro(interaction.guild_id)
+        is_pro = await speed_tier.is_guild_pro_fast(db, interaction.guild_id)
         if is_pro:
             return True
 
-        # 未啟用 Pro，顯示漂亮的 UI
+        # 未啟用 Pro，顯示 3.0 雙方案圖片對比卡片
+        img_buf = await render_plan_card(interaction.guild.name, False)
+        file = discord.File(img_buf, filename="plan_compare.png")
         embed = discord.Embed(
-            title="💎 這是 Pro 專業版專屬功能！",
+            title="⚡ 此功能屬於 Pro 疾速方案",
             description=(
-                f"此功能非常耗費伺服器 CPU 資源，為避免影響伺服器運行造成機器人中斷，"
-                f"目前在您的伺服器 (**{interaction.guild.name}**) 尚未啟用 Pro 專業版。\n\n"
-                f"💡 **Pro 專業版包含：**\n"
-                f"• 🟢 24/7 音樂不斷線模式\n"
-                f"• 📋 支援大型 YouTube / Spotify 播放清單解析 (超過 5 首歌)\n"
-                f"• ⚡ 更高效與優先等級的串流解碼\n\n"
-                f"請點擊下方按鈕獲取您的 Pro 金鑰以解鎖全部功能！"
+                f"**{interaction.guild.name}** 目前使用 **FREE 標準方案**。\n"
+                f"升級 **PRO 疾速方案** 即可享 0 秒指令連發、24/7 音樂不斷線與無限歌單解析。"
             ),
-            color=0xFFD700
+            color=Colors.PRO,
         )
-        embed.set_footer(text="勇者 2.0 • 專業版防禦機制")
+        embed.set_image(url="attachment://plan_compare.png")
+        embed.set_footer(text="倉鼠勇者 3.0 • 雙方案疾速引擎")
         
         pro_cog = interaction.client.cogs.get("Pro")
         view = ProPromotionView(pro_cog)
         
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
         return False
 
-    @app_commands.command(name="pro", description="查看或啟用本伺服器的 Pro 專業版狀態")
-    async def pro_status(self, interaction: discord.Interaction):
-        """查看本伺服器的 Pro 狀態與激活面板"""
+    async def _send_plan_panel(self, interaction: discord.Interaction):
+        """發送 3.0 雙方案對比圖卡與操作按鈕"""
         if not interaction.guild:
             return await interaction.response.send_message("❌ 此指令僅限在伺服器中使用。", ephemeral=True)
 
-        is_pro = await self.bot.db.is_guild_pro(interaction.guild_id)
+        await interaction.response.defer(ephemeral=True)
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, interaction.guild_id)
         view = ProPromotionView(self, support_url=self.support_url)
 
+        exp_text = ""
         if is_pro:
             async with self.bot.db.db.execute(
-                "SELECT activated_at, expires_at FROM pro_guilds WHERE guild_id = ?",
+                "SELECT expires_at FROM pro_guilds WHERE guild_id = ?",
                 (interaction.guild_id,)
             ) as cursor:
                 row = await cursor.fetchone()
+            exp_text = row["expires_at"][:10] if (row and row["expires_at"]) else "永久有效"
 
-            exp_text = "永久有效"
-            if row and row["expires_at"]:
-                exp_text = row["expires_at"]
+        img_buf = await render_plan_card(interaction.guild.name, is_pro, exp_text)
+        file = discord.File(img_buf, filename="hamster_plan_3_0.png")
 
-            embed = discord.Embed(
-                title="💎 Pro 專業版 — 啟用中",
-                description=(
-                    f"🎉 本伺服器 (**{interaction.guild.name}**) 已啟用 **Pro 專業版**！\n\n"
-                    f"⏰ **到期時間：** `{exp_text}`\n\n"
-                    f"✨ **已解鎖特權：**\n"
-                    f"• 🟢 24/7 音樂不斷線模式 (`/247`)\n"
-                    f"• 📋 支援大型播放清單解析（無首數限制）\n"
-                    f"• ⚡ 優先音訊串流解碼線路"
-                ),
-                color=0xFFD700
-            )
-            embed.set_footer(text="倉鼠勇者 2.0 • Pro 系統")
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        else:
-            embed = discord.Embed(
-                title="💎 Pro 專業版 — 尚未啟用",
-                description=(
-                    f"本伺服器 (**{interaction.guild.name}**) 目前為**一般免費版本**。\n\n"
-                    f"💎 **Pro 專業版專屬福利：**\n"
-                    f"• 🟢 **24/7 音樂不斷線**：機器人永久留守語音頻道，隨時待命\n"
-                    f"• 📋 **大型歌單解析**：支援播放超過 5 首歌曲的完整播放清單\n"
-                    f"• ⚡ **優先解碼**：享有專屬優先線路與更低的音訊延遲\n\n"
-                    f"若已有激活金鑰，請點擊下方 **「輸入激活碼」**；\n"
-                    f"若欲取得金鑰，請點擊 **「獲取 Pro 金鑰」**。"
-                ),
-                color=Colors.PRIMARY
-            )
-            embed.set_footer(text="倉鼠勇者 2.0 • Pro 系統")
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        embed = discord.Embed(
+            title="⚡ 倉鼠勇者 3.0 — PRO 疾速版已啟用" if is_pro else "⚡ 倉鼠勇者 3.0 — 雙方案對比",
+            description=(
+                f"目前方案：**{'PRO 疾速版（0 秒連發）' if is_pro else 'FREE 免費版（3.0 秒節流）'}**"
+                + (f" • 到期：`{exp_text}`" if is_pro else "\n點擊下方按鈕輸入金鑰即可立即切換至疾速通道。")
+            ),
+            color=Colors.PRO if is_pro else Colors.PRIMARY,
+        )
+        embed.set_image(url="attachment://hamster_plan_3_0.png")
+        embed.set_footer(text="倉鼠勇者 3.0 • Free / Pro 雙方案系統")
+        await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=True)
+
+    @app_commands.command(name="pro", description="查看或啟用本伺服器的 3.0 Pro 疾速方案")
+    async def pro_status(self, interaction: discord.Interaction):
+        await self._send_plan_panel(interaction)
+
+    @app_commands.command(name="plan", description="查看倉鼠勇者 3.0 免費版與 Pro 疾速版對比圖卡")
+    async def plan_status(self, interaction: discord.Interaction):
+        await self._send_plan_panel(interaction)
 
     # ─── 管理指令 (僅限 Bot Owner) ─────────────────────────────────────────
 

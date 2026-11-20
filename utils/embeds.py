@@ -12,12 +12,12 @@ from config import Colors, Emoji, BadgeImages
 _original_set_thumbnail = discord.Embed.set_thumbnail
 _original_set_image = discord.Embed.set_image
 
-def _patched_set_thumbnail(self, url):
+def _patched_set_thumbnail(self, url=None):
     if url and not str(url).startswith(("http://", "https://", "attachment://")):
         return self
     return _original_set_thumbnail(self, url=url)
 
-def _patched_set_image(self, url):
+def _patched_set_image(self, url=None):
     if url and not str(url).startswith(("http://", "https://", "attachment://")):
         return self
     return _original_set_image(self, url=url)
@@ -54,11 +54,11 @@ class EmbedFactory:
         
         # 設定作者資訊
         if author_name:
-            embed.set_author(name=author_name, icon_url=author_icon or discord.Embed.Empty)
+            embed.set_author(name=author_name, icon_url=author_icon or None)
         
         # 設定 Footer
         if footer_text:
-            embed.set_footer(text=footer_text, icon_url=footer_icon or discord.Embed.Empty)
+            embed.set_footer(text=footer_text, icon_url=footer_icon or None)
         
         return embed
 

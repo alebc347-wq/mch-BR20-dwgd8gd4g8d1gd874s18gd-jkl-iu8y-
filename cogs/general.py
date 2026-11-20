@@ -15,8 +15,17 @@ import asyncio
 import io
 from PIL import Image, ImageDraw, ImageFont
 
-from config import Colors, Emoji, BadgeImages
+from config import Colors, Emoji, BadgeImages, BOT_VERSION
 from utils.embeds import EmbedFactory, PaginatorView
+from utils.speed_tier import speed_tier
+from utils.visual_cards import (
+    render_help_banner,
+    render_ping_card,
+    render_health_card,
+    render_profile_card,
+    render_server_card,
+    render_version_card,
+)
 
 
 class HelpSelectMenu(discord.ui.Select):
@@ -131,6 +140,8 @@ class HelpSelectMenu(discord.ui.Select):
                     "`/about` — 關於機器人\n"
                     "`/invite` — 邀請連結\n"
                     "`/uptime` — 運行時間\n"
+                    "`/health` — 🩺 系統健康儀表板圖卡\n"
+                    "`/plan` `/pro` — ⚡ 3.0 雙方案對比圖卡\n"
                     "`.rest [時間/起訖/off]` `/rest` — 🌙 低耗電休息模式"
                 ),
                 color=Colors.PRIMARY,
@@ -326,67 +337,135 @@ class HelpSelectMenu(discord.ui.Select):
 
 
 class HelpView(discord.ui.View):
-    """幫助選單 View"""
-    def __init__(self):
-        super().__init__(timeout=120)
+    """倉鼠勇者 3.0 幫助中樞互動介面（分類選單 + 極速快捷按鈕）"""
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=180)
+        self.bot = bot
         self.add_item(HelpSelectMenu())
+
+    @discord.ui.button(label="⚡ 3.0 雙方案", style=discord.ButtonStyle.primary, row=1)
+    async def btn_plan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pro_cog = self.bot.get_cog("Pro")
+        if pro_cog and hasattr(pro_cog, "_send_plan_panel"):
+            await pro_cog._send_plan_panel(interaction)
+        else:
+            await interaction.response.send_message("請輸入 `/plan` 查看 3.0 Free / Pro 雙方案。", ephemeral=True)
+
+    @discord.ui.button(label="🏓 極速測速", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gen_cog = self.bot.get_cog("General")
+        if gen_cog:
+            await gen_cog._send_ping_card(interaction)
+        else:
+            await interaction.response.send_message(f"🏓 `{round(self.bot.latency * 1000)} ms`", ephemeral=True)
+
+    @discord.ui.button(label="🩺 健康儀表板", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_health(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gen_cog = self.bot.get_cog("General")
+        if gen_cog:
+            await gen_cog._send_health_card(interaction)
+        else:
+            await interaction.response.send_message("請輸入 `/health` 查看系統健康度。", ephemeral=True)
 
 
 class General(commands.Cog):
-    """一般指令"""
+    """一般指令 (倉鼠勇者 3.0 極速視覺版)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="顯示互動式幫助選單")
-    async def help_command(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title=f"{Emoji.INFO} 幫助選單",
-            description="使用下方選單瀏覽各系統的指令說明。",
-            color=Colors.PRIMARY,
-        )
-        embed.add_field(
-            name="指令分類",
-            value=(
-                f"{Emoji.INFO} 一般指令\n"
-                f"{Emoji.SHIELD} 管理系統\n"
-                f"🤖 自動審核\n"
-                f"📋 日誌系統\n"
-                f"{Emoji.MUSIC} 音樂系統\n"
-                f"{Emoji.GAME} 娛樂系統\n"
-                f"{Emoji.PARTY} 抽獎系統\n"
-                f"🛠️ 工具系統"
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="選擇下方選單查看詳細指令")
-        
-        view = HelpView()
-        await interaction.response.send_message(embed=embed, view=view)
+    async def _probe_db_ms(self) -> tuple[bool, float]:
+        if not getattr(self.bot, "db", None) or not self.bot.db.db:
+            return False, -1.0
+        t0 = time.perf_counter()
+        try:
+            async with self.bot.db.db.execute("SELECT 1") as cur:
+                await cur.fetchone()
+            return True, round((time.perf_counter() - t0) * 1000, 2)
+        except Exception:
+            return False, -1.0
 
-    @app_commands.command(name="ping", description="查看 Bot 延遲")
-    async def ping(self, interaction: discord.Interaction):
-        latency = round(self.bot.latency * 1000)
-        
-        # 延遲指標
-        if latency < 100:
-            status = "🟢 極佳"
-            color = Colors.SUCCESS
-        elif latency < 200:
-            status = "🟡 正常"
-            color = Colors.WARNING
-        else:
-            status = "🔴 較慢"
-            color = Colors.ERROR
-        
+    async def _send_ping_card(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        ws_ms = round(self.bot.latency * 1000, 1) if self.bot.latency == self.bot.latency else 0.0
+        _, db_ms = await self._probe_db_ms()
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, interaction.guild_id)
+
+        img_buf = await render_ping_card(ws_ms, max(db_ms, 0.0), is_pro)
+        file = discord.File(img_buf, filename="ping_3_0.png")
         embed = discord.Embed(
-            title="🏓 Pong!",
-            color=color,
+            color=Colors.PRO if is_pro else Colors.PRIMARY,
         )
-        embed.add_field(name="延遲", value=f"`{latency}ms`", inline=True)
-        embed.add_field(name="狀態", value=status, inline=True)
-        
-        await interaction.response.send_message(embed=embed)
+        embed.set_image(url="attachment://ping_3_0.png")
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+
+    async def _send_health_card(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        ws_ms = round(self.bot.latency * 1000, 1) if self.bot.latency == self.bot.latency else 0.0
+        db_ok, db_ms = await self._probe_db_ms()
+
+        server_id = os.getenv("SERVER_ID", "單機模式")
+        is_active = getattr(self.bot, "is_active_node", True)
+        is_resting = getattr(self.bot, "is_resting", False)
+        node_label = f"ACTIVE ({server_id})" if is_active else f"IDLE ({server_id})"
+
+        lavalink_label = "未初始化"
+        try:
+            import wavelink
+            nodes = list(wavelink.Pool.nodes.values())
+            if nodes:
+                connected = sum(1 for n in nodes if n.status == wavelink.NodeStatus.CONNECTED)
+                lavalink_label = f"{connected}/{len(nodes)} 節點在線"
+            else:
+                lavalink_label = "無連線節點"
+        except Exception:
+            lavalink_label = "無法偵測"
+
+        uptime_secs = int(time.time() - getattr(self.bot, "_start_time", time.time()))
+        days, rem = divmod(uptime_secs, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, seconds = divmod(rem, 60)
+        uptime_str = f"{days}天 {hours}時 {minutes}分" if days else f"{hours}時 {minutes}分 {seconds}秒"
+
+        img_buf = await render_health_card(
+            ws_ms=ws_ms,
+            db_ms=max(db_ms, 0.0),
+            db_ok=db_ok,
+            node_label=node_label,
+            is_active=is_active,
+            is_resting=is_resting,
+            lavalink_label=lavalink_label,
+            cog_count=len(self.bot.cogs),
+            uptime_str=uptime_str,
+            guild_count=len(self.bot.guilds),
+        )
+        file = discord.File(img_buf, filename="health_3_0.png")
+        embed = discord.Embed(
+            color=Colors.SUCCESS if (is_active and db_ok and not is_resting) else Colors.WARNING,
+        )
+        embed.set_image(url="attachment://health_3_0.png")
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+
+    @app_commands.command(name="help", description="顯示倉鼠勇者 3.0 互動式指令中樞")
+    async def help_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, interaction.guild_id)
+        ws_ms = round(self.bot.latency * 1000, 1) if self.bot.latency == self.bot.latency else 0.0
+        img_buf = await render_help_banner(is_pro, len(self.bot.guilds), len(self.bot.cogs), ws_ms)
+        file = discord.File(img_buf, filename="help_banner_3_0.png")
+
+        embed = discord.Embed(
+            color=Colors.PRO if is_pro else Colors.PRIMARY,
+        )
+        embed.set_image(url="attachment://help_banner_3_0.png")
+        embed.set_footer(text=f"倉鼠勇者 {BOT_VERSION} • 請由下方選單切換功能分類或使用快捷按鈕")
+
+        view = HelpView(self.bot)
+        await interaction.followup.send(embed=embed, file=file, view=view)
+
+    @app_commands.command(name="ping", description="查看倉鼠勇者 3.0 極速測速圖卡")
+    async def ping(self, interaction: discord.Interaction):
+        await self._send_ping_card(interaction)
 
     @app_commands.command(name="botinfo", description="顯示 Bot 資訊與統計")
     async def botinfo(self, interaction: discord.Interaction):
@@ -415,100 +494,71 @@ class General(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="serverinfo", description="顯示伺服器詳細資訊")
+    @app_commands.command(name="serverinfo", description="顯示伺服器 3.0 視覺總覽卡片")
     async def serverinfo(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ 此指令僅限在伺服器中使用。", ephemeral=True)
+        await interaction.response.defer()
         guild = interaction.guild
-        
-        embed = discord.Embed(
-            title=f"📊 {guild.name}",
-            color=Colors.PRIMARY,
-        )
-        
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-        
-        embed.add_field(name="**擁有者**", value=f"{guild.owner.mention}" if guild.owner else "未知", inline=True)
-        embed.add_field(name="**建立時間**", value=f"<t:{int(guild.created_at.timestamp())}:R>", inline=True)
-        embed.add_field(name="**成員數**", value=f"`{guild.member_count}`", inline=True)
-        
-        # 頻道統計
-        text_channels = len(guild.text_channels)
-        voice_channels = len(guild.voice_channels)
-        categories = len(guild.categories)
-        embed.add_field(
-            name="**頻道**",
-            value=f"💬 文字: `{text_channels}` | 🔊 語音: `{voice_channels}` | 📁 分類: `{categories}`",
-            inline=False,
-        )
-        
-        # 角色數
-        embed.add_field(name="**角色數**", value=f"`{len(guild.roles)}`", inline=True)
-        embed.add_field(name="**表情數**", value=f"`{len(guild.emojis)}`", inline=True)
-        embed.add_field(name="**Boost 等級**", value=f"`{guild.premium_tier}`", inline=True)
-        
-        # 驗證等級
-        verification_levels = {
-            discord.VerificationLevel.none: "無",
-            discord.VerificationLevel.low: "低",
-            discord.VerificationLevel.medium: "中",
-            discord.VerificationLevel.high: "高",
-            discord.VerificationLevel.highest: "最高",
-        }
-        embed.add_field(
-            name="**驗證等級**",
-            value=f"`{verification_levels.get(guild.verification_level, '未知')}`",
-            inline=True,
-        )
-        
-        embed.set_footer(text=f"伺服器 ID: {guild.id}")
-        
-        await interaction.response.send_message(embed=embed)
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, guild.id)
 
-    @app_commands.command(name="userinfo", description="顯示用戶資訊")
+        icon_bytes = None
+        if guild.icon:
+            try:
+                icon_bytes = await guild.icon.replace(format="png", size=256).read()
+            except Exception:
+                pass
+
+        online_count = sum(1 for m in guild.members if m.status != discord.Status.offline)
+        img_buf = await render_server_card(
+            guild_name=guild.name,
+            guild_id=guild.id,
+            is_pro=is_pro,
+            member_count=guild.member_count or len(guild.members),
+            online_count=online_count,
+            text_count=len(guild.text_channels),
+            voice_count=len(guild.voice_channels),
+            role_count=len(guild.roles),
+            boost_tier=guild.premium_tier,
+            icon_bytes=icon_bytes,
+        )
+        file = discord.File(img_buf, filename="server_card_3_0.png")
+        embed = discord.Embed(color=Colors.PRO if is_pro else Colors.PRIMARY)
+        embed.set_image(url="attachment://server_card_3_0.png")
+        embed.set_footer(text=f"建立於 {guild.created_at.strftime('%Y-%m-%d')} • 倉鼠勇者 {BOT_VERSION}")
+        await interaction.followup.send(embed=embed, file=file)
+
+    @app_commands.command(name="userinfo", description="顯示成員 3.0 視覺檔案卡片")
     @app_commands.describe(user="要查詢的用戶（不填則查詢自己）")
     async def userinfo(self, interaction: discord.Interaction, user: discord.Member = None):
-        user = user or interaction.user
-        
-        embed = discord.Embed(
-            title=f"👤 {user.display_name}",
-            color=user.color if user.color != discord.Color.default() else Colors.PRIMARY,
+        await interaction.response.defer()
+        target = user or interaction.user
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, interaction.guild_id)
+
+        avatar_bytes = None
+        try:
+            avatar_bytes = await target.display_avatar.replace(format="png", size=256).read()
+        except Exception:
+            pass
+
+        roles = [r.name for r in reversed(getattr(target, "roles", [])) if r.name != "@everyone"]
+        created_str = target.created_at.strftime("%Y-%m-%d")
+        joined_str = target.joined_at.strftime("%Y-%m-%d") if getattr(target, "joined_at", None) else "未知"
+
+        img_buf = await render_profile_card(
+            display_name=target.display_name,
+            username=target.name,
+            user_id=target.id,
+            is_pro=is_pro,
+            roles=roles,
+            joined_str=joined_str,
+            created_str=created_str,
+            avatar_bytes=avatar_bytes,
         )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        
-        embed.add_field(name="**用戶名**", value=f"`{user.name}`", inline=True)
-        embed.add_field(name="**暱稱**", value=f"`{user.nick or '無'}`", inline=True)
-        embed.add_field(name="**ID**", value=f"`{user.id}`", inline=True)
-        embed.add_field(name="**帳號建立**", value=f"<t:{int(user.created_at.timestamp())}:R>", inline=True)
-        embed.add_field(name="**加入伺服器**", value=f"<t:{int(user.joined_at.timestamp())}:R>" if user.joined_at else "未知", inline=True)
-        
-        # 身分組
-        roles = [r.mention for r in reversed(user.roles) if r.name != "@everyone"]
-        if roles:
-            embed.add_field(
-                name=f"**身分組 [{len(roles)}]**",
-                value=" ".join(roles[:15]) + ("..." if len(roles) > 15 else ""),
-                inline=False,
-            )
-        
-        # 關鍵權限
-        key_perms = []
-        if user.guild_permissions.administrator:
-            key_perms.append("管理員")
-        if user.guild_permissions.manage_guild:
-            key_perms.append("管理伺服器")
-        if user.guild_permissions.ban_members:
-            key_perms.append("封禁成員")
-        if user.guild_permissions.kick_members:
-            key_perms.append("踢出成員")
-        if user.guild_permissions.manage_messages:
-            key_perms.append("管理訊息")
-        
-        if key_perms:
-            embed.add_field(name="**關鍵權限**", value=", ".join(key_perms), inline=False)
-        
-        embed.set_footer(text=f"用戶 ID: {user.id}")
-        
-        await interaction.response.send_message(embed=embed)
+        file = discord.File(img_buf, filename="profile_card_3_0.png")
+        embed = discord.Embed(color=Colors.PRO if is_pro else Colors.PRIMARY)
+        embed.set_image(url="attachment://profile_card_3_0.png")
+        await interaction.followup.send(embed=embed, file=file)
 
     @app_commands.command(name="avatar", description="顯示用戶頭像")
     @app_commands.describe(user="要查看頭像的用戶")
@@ -612,123 +662,21 @@ class General(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # VERSION — Pillow 渲染版本圖
+    # VERSION — 倉鼠勇者 3.0 即時程式圖片版本卡（零等待）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    @app_commands.command(name="version", description="查看機器人版本資訊與新功能說明")
+    @app_commands.command(name="version", description="即時查看倉鼠勇者 3.0 版本資訊視覺卡")
     async def version(self, interaction: discord.Interaction):
-        VERSION = "2.4.0"
-        user_id = str(interaction.user.id)
-        
-        # 讀取 version_viewed.json
-        viewed_file = os.path.join("data", "version_viewed.json")
-        os.makedirs("data", exist_ok=True)
-        viewed_users = {}
-        if os.path.exists(viewed_file):
-            try:
-                with open(viewed_file, "r", encoding="utf-8") as f:
-                    viewed_users = json.load(f)
-            except Exception:
-                pass
-                
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        last_viewed_date = viewed_users.get(user_id)
-        is_first_time_today = last_viewed_date != today_str
+        await interaction.response.defer()
+        is_pro = await speed_tier.is_guild_pro_fast(self.bot.db, interaction.guild_id)
+        img_buf = await render_version_card(BOT_VERSION, is_pro)
+        file = discord.File(img_buf, filename="version_3_0.png")
 
-        # 更新今日已讀
-        viewed_users[user_id] = today_str
-        try:
-            with open(viewed_file, "w", encoding="utf-8") as f:
-                json.dump(viewed_users, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
-
-        await interaction.response.send_message("查詢可能要幾分鐘，很多人都在查詢 ⏳")
-        msg = await interaction.original_response()
-
-        # 點點動畫
-        for _ in range(2):
-            for d in ["查詢中.", "查詢中..", "查詢中..."]:
-                await msg.edit(content=d)
-                await asyncio.sleep(1)
-
-        # 進度條動畫
-        total_blocks = 20
-        for percent in range(2, 101, 2):
-            filled_blocks = int(total_blocks * percent / 100)
-            bar = "█" * filled_blocks + "░" * (total_blocks - filled_blocks)
-            await msg.edit(content=f"目前查詢進度：[{bar}] {percent}%")
-            await asyncio.sleep(0.4)
-
-        await msg.edit(content="完成")
-        await asyncio.sleep(1)
-
-        # 生成版本圖
-        bg_path = os.path.join("assets", "your_background_image.jpg")
-        font_path = os.path.join("assets", "arialbd.ttf")
-        output_path = os.path.join("data", "version_image.png")
-        
-        # 備用字型
-        if not os.path.exists(font_path):
-            font_path = "C:/Windows/Fonts/arialbd.ttf"
-            if not os.path.exists(font_path):
-                font_path = "C:/Windows/Fonts/arial.ttf"
-
-        if os.path.exists(bg_path):
-            try:
-                img = Image.open(bg_path).convert("RGBA")
-                draw = ImageDraw.Draw(img)
-                # 字型大小為背景高度的 20%
-                font_size = int(img.height * 0.2)
-                try:
-                    font = ImageFont.truetype(font_path, font_size)
-                except Exception:
-                    font = ImageFont.load_default()
-
-                text = VERSION
-                # 取得文字寬高以置中
-                bbox = font.getbbox(text)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                x = (img.width - text_w) // 2
-                y = (img.height - text_h) // 2
-                draw.text((x, y), text, font=font, fill="white")
-                img.save(output_path)
-            except Exception as e:
-                print(f"Pillow 繪圖錯誤：{e}")
-
-        # 建立 Embed
-        now = datetime.now()
-        ampm = "上午" if now.hour < 12 else "下午"
-        hour = now.hour if now.hour <= 12 else now.hour - 12
-        time_str = f"{ampm} {hour}:{now.minute:02d}"
-        footer_text = f"由 {interaction.user.display_name} 查詢 ‧ 今天 {time_str}"
-
-        embed = discord.Embed(title=f"✅ 目前版本 {VERSION} (全新跨群同步與優化！)", color=0x00ff00)
-        embed.description = "[點此觀看更新介紹影片](https://youtu.be/vWO_O4mBXRk)"
-        embed.set_author(name="我是倉鼠勇者", icon_url=self.bot.user.display_avatar.url)
-        embed.add_field(name="🆕 新增", value="・跨群聊天支援訊息編輯、刪除與表情反應雙向同步\n・開發者加入伺服器時自動給予日誌頻道存取權限", inline=False)
-        embed.add_field(name="🐞 修復", value="・修復 Ultra 啟用金鑰時的 NameError (EmbedFactory) 錯誤", inline=False)
-        embed.add_field(name="⚙️ 系統", value="・跨群聊天指令重構為全域 Slash 指令，解決同步遲緩問題\n・管理員權限判定優化，全面支援開發者 Bypass 權限", inline=False)
-        embed.set_footer(text=footer_text)
-
-        files = []
-        # 本日首查顯示 update_new.png，否則顯示 update_read.png
-        new_img_path = os.path.join("assets", "update_new.png")
-        read_img_path = os.path.join("assets", "update_read.png")
-        
-        if is_first_time_today and os.path.exists(new_img_path):
-            files.append(discord.File(new_img_path, filename="update.png"))
-            embed.set_thumbnail(url="attachment://update.png")
-        elif os.path.exists(read_img_path):
-            files.append(discord.File(read_img_path, filename="update.png"))
-            embed.set_thumbnail(url="attachment://update.png")
-
-        if os.path.exists(output_path):
-            files.append(discord.File(output_path, filename="version_image.png"))
-            embed.set_image(url="attachment://version_image.png")
-
-        await msg.delete() # 刪除「完成」的純文字訊息，以發送帶有 Attachments 的 Embed
-        await interaction.channel.send(embed=embed, files=files)
+        embed = discord.Embed(
+            color=Colors.PRO if is_pro else Colors.PRIMARY,
+        )
+        embed.set_image(url="attachment://version_3_0.png")
+        embed.set_footer(text=f"倉鼠勇者 {BOT_VERSION} • 即時渲染（已移除假載入動畫）")
+        await interaction.followup.send(embed=embed, file=file)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # JOIN — 宣傳與 Email 聯絡
@@ -747,6 +695,13 @@ class General(commands.Cog):
         )
         embed.set_image(url=FEATURE_IMG)
         await interaction.response.send_message(embed=embed, view=JoinInfoView(), ephemeral=True)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # HEALTH — 3.0 系統健康儀表板視覺卡
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @app_commands.command(name="health", description="🩺 檢查倉鼠勇者 3.0 系統健康儀表板視覺卡")
+    async def health(self, interaction: discord.Interaction):
+        await self._send_health_card(interaction)
 
 
 

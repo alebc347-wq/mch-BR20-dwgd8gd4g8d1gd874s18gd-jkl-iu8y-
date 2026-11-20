@@ -223,12 +223,10 @@ class RestMode(commands.Cog):
             print(f"⚠️ 儲存休息模式設定失敗: {e}")
 
     async def _has_permission(self, user: discord.User | discord.Member) -> bool:
-        """檢查是否有權限管理休息模式"""
+        """檢查是否有權限管理全域休息模式（僅限 Bot 擁有者與指定 Bypass 管理員，防止一般伺服器管理員全域休眠機器人）"""
         if user.id == BYPASS_USER_ID:
             return True
         if await self.bot.is_owner(user):
-            return True
-        if isinstance(user, discord.Member) and user.guild_permissions.administrator:
             return True
         return False
 

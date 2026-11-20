@@ -3,6 +3,9 @@ from discord import app_commands
 from discord.ext import commands
 import datetime
 from utils.database import Database
+from config import OWNER_ID
+
+BYPASS_USER_ID = 1437408048934027274
 
 class AntiPlagiarism(commands.Cog):
     """倉鼠勇者 - 原創心血防護、反抄襲與系統安全核心模組 (Anti-Plagiarism & System Security Core)"""
@@ -79,12 +82,17 @@ class AntiPlagiarism(commands.Cog):
 
     admin_group = app_commands.Group(name="anti_plagiarism", description="防抄襲與全域安全管理指令")
 
-    @admin_group.command(name="blacklist_add", description="[管理員] 將使用者或伺服器加入全域黑名單")
+    async def _is_global_admin(self, user: discord.User | discord.Member) -> bool:
+        """全域安全管理權限：僅限 Bot 擁有者與指定 Bypass 管理員"""
+        if user.id == BYPASS_USER_ID or (OWNER_ID and user.id == OWNER_ID):
+            return True
+        return await self.bot.is_owner(user)
+
+    @admin_group.command(name="blacklist_add", description="[僅限 Bot 擁有者] 將使用者或伺服器加入全域黑名單")
     @app_commands.describe(target_id="目標 User ID 或 Guild ID", target_type="類型 (user/guild)", reason="封鎖原因")
     async def blacklist_add(self, interaction: discord.Interaction, target_id: str, target_type: str = "user", reason: str = "抄襲/惡意破壞"):
-        admin_id = 1437408048934027274
-        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+        if not await self._is_global_admin(interaction.user):
+            await interaction.response.send_message("❌ 此指令涉及全域封鎖，僅限 Bot 擁有者執行。", ephemeral=True)
             return
 
         try:
@@ -93,15 +101,23 @@ class AntiPlagiarism(commands.Cog):
             await interaction.response.send_message("❌ 請輸入有效的 ID 數字。", ephemeral=True)
             return
 
-        await self.db.add_global_blacklist(tid, target_type.lower(), reason, interaction.user.id)
-        await interaction.response.send_message(f"✅ 已成功將 {target_type} ID `{tid}` 加入全域黑名單！原因：{reason}", ephemeral=True)
+        if tid == BYPASS_USER_ID or (OWNER_ID and tid == OWNER_ID):
+            await interaction.response.send_message("❌ 無法將系統擁有者加入全域黑名單。", ephemeral=True)
+            return
 
-    @admin_group.command(name="blacklist_remove", description="[管理員] 將目標從全域黑名單移除")
+        ttype = target_type.lower()
+        if ttype not in ("user", "guild"):
+            await interaction.response.send_message("❌ target_type 僅能為 `user` 或 `guild`。", ephemeral=True)
+            return
+
+        await self.db.add_global_blacklist(tid, ttype, reason, interaction.user.id)
+        await interaction.response.send_message(f"✅ 已成功將 {ttype} ID `{tid}` 加入全域黑名單！原因：{reason}", ephemeral=True)
+
+    @admin_group.command(name="blacklist_remove", description="[僅限 Bot 擁有者] 將目標從全域黑名單移除")
     @app_commands.describe(target_id="目標 ID")
     async def blacklist_remove(self, interaction: discord.Interaction, target_id: str):
-        admin_id = 1437408048934027274
-        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+        if not await self._is_global_admin(interaction.user):
+            await interaction.response.send_message("❌ 此指令涉及全域封鎖，僅限 Bot 擁有者執行。", ephemeral=True)
             return
 
         try:
@@ -113,11 +129,10 @@ class AntiPlagiarism(commands.Cog):
         await self.db.remove_global_blacklist(tid)
         await interaction.response.send_message(f"✅ 已成功將 ID `{tid}` 自全域黑名單中移除！", ephemeral=True)
 
-    @admin_group.command(name="blacklist_list", description="[管理員] 查看全域黑名單列表")
+    @admin_group.command(name="blacklist_list", description="[僅限 Bot 擁有者] 查看全域黑名單列表")
     async def blacklist_list(self, interaction: discord.Interaction):
-        admin_id = 1437408048934027274
-        if interaction.user.id != admin_id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 你沒有權限執行此管理指令。", ephemeral=True)
+        if not await self._is_global_admin(interaction.user):
+            await interaction.response.send_message("❌ 此指令涉及全域安全資料，僅限 Bot 擁有者執行。", ephemeral=True)
             return
 
         records = await self.db.get_global_blacklist()

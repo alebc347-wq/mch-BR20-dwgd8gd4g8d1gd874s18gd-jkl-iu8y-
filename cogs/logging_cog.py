@@ -27,10 +27,7 @@ class LogSettingsSelect(discord.ui.Select):
             discord.SelectOption(label="訊息編輯 (Message Edit)", value="message_edit", description="記錄訊息內容修改事件"),
             discord.SelectOption(label="角色變更 (Role Change)", value="role_change", description="記錄成員身分組角色變動"),
             discord.SelectOption(label="語音動態 (Voice Activity)", value="voice", description="記錄加入/離開/切換語音頻道"),
-            discord.SelectOption(label="正在輸入 (Is Typing) 💎Pro", value="typing", description="💎 Pro 專屬 — 記錄成員正在打字（洗版級）"),
-            discord.SelectOption(label="新訊息 (New Message) 💎Pro", value="new_message", description="💎 Pro 專屬 — 記錄所有發送的新訊息（洗版級）"),
             discord.SelectOption(label="頻道變更 (Channel Change)", value="channel_change", description="記錄頻道的建立與刪除"),
-            discord.SelectOption(label="狀態改變 (Status Change) 💎Pro", value="status_change", description="💎 Pro 專屬 — 記錄成員的線上狀態與活動/自訂狀態變更"),
             discord.SelectOption(label="指令使用 (Command Use)", value="command_use", description="記錄成員使用機器人的指令與參數"),
             discord.SelectOption(label="音效板使用 (Soundboard Use)", value="soundboard", description="記錄成員在語音頻道中使用音效板播放音效"),
             discord.SelectOption(label="系統重啟資訊 (Restart Info)", value="restart_notifications", description="記錄 Bot 的重啟、更新與準備就緒狀態")
@@ -168,12 +165,10 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-        self.pro_reminder_loop.start()
-        self._presence_cooldowns = {}
-        self._log_rate_limits = {}
+        self._log_rate_limits: dict[int, list[float]] = {}
 
     def cog_unload(self):
-        self.pro_reminder_loop.cancel()
+        pass
 
     async def ensure_log_channel(self, guild: discord.Guild):
         """確認伺服器有『顯示伺服器目前變動』私密頻道，若無則補上，並設定權限與寫入資料庫"""
@@ -285,17 +280,13 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
             print(f"⚠️ 發送日誌時發生未知錯誤: {e}")
 
     async def _should_log(self, guild_id: int, event: str) -> bool:
-        """檢查是否應該記錄此事件"""
-        # 高頻/洗版級進階日誌僅限 Pro 或 Ultra 伺服器
-        PRO_ONLY_EVENTS = {"typing", "new_message", "status_change"}
-        if event in PRO_ONLY_EVENTS:
-            if not await self.db.is_guild_pro(guild_id):
-                return False
-            
+        """檢查是否應該記錄此事件（3.0 已全面移除打字/新訊/狀態洗版事件）"""
+        if event in {"typing", "new_message", "status_change"}:
+            return False
+
         settings = await self.db.get_guild_settings(guild_id)
         log_events_str = settings.get("log_events")
         
-        # 預設啟用的事件列表（排除 status_change、typing、new_message 以防洗版）
         default_events = [
             "member_join", "member_leave", "message_delete", "message_edit",
             "role_change", "voice", "channel_change", "command_use", "soundboard"
@@ -543,49 +534,24 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         await self._send_log(member.guild, embed, view, event="voice")
 
     @commands.Cog.listener()
-    async def on_typing(self, channel: discord.abc.Messageable, user: discord.Member | discord.User, when):
-        """正在輸入"""
-        guild = getattr(channel, 'guild', None)
-        if not guild:
-            return
-        if user.bot:
-            return
-        if not await self._should_log(guild.id, "typing"):
-            return
-        
-        embed = EmbedFactory.log_typing(channel, user, self.bot)
-        await self._send_log(guild, embed, event="typing")
-
-    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """新訊息（記錄到日誌與頻道內設定觸發）"""
+        """僅保留日誌頻道內『設定』快捷觸發（3.0 已移除每則新訊息與正在輸入洗版日誌）"""
         if not message.guild or message.author.bot:
             return
         
-        # 檢查是否在「顯示伺服器目前變動」日誌頻道中輸入「設定」
+        if message.content.strip() not in ("設定", "log設定", "日誌設定"):
+            return
+
         log_channel_id = await self.db.get_log_channel(message.guild.id)
         is_log_channel = (log_channel_id and message.channel.id == log_channel_id) or (message.channel.name == "顯示伺服器目前變動")
 
-        if is_log_channel and message.content.strip() in ["設定", "log設定", "日誌設定"]:
+        if is_log_channel:
             embed = discord.Embed(
                 title="⚙️ 日誌自定義設定",
                 description="點擊下方按鈕以開啟日誌系統自定義選單：",
                 color=Colors.PRIMARY,
             )
             await message.channel.send(embed=embed, view=LogConfigButton())
-            return
-
-        if not await self._should_log(message.guild.id, "new_message"):
-            return
-        
-        embed = EmbedFactory.log_new_message(message, self.bot)
-        view = DeleteMessageButton(
-            user_id=message.author.id,
-            message_url=message.jump_url,
-            channel_id=message.channel.id,
-            guild_id=message.guild.id,
-        )
-        await self._send_log(message.guild, embed, view, event="new_message")
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
@@ -626,124 +592,6 @@ class Logging(commands.GroupCog, name="log", description="日誌系統設定"):
         
         EmbedFactory._add_server_footer(embed, channel.guild, self.bot)
         await self._send_log(channel.guild, embed)
-
-    @commands.Cog.listener()
-    async def on_presence_update(self, before: discord.Member, after: discord.Member):
-        """成員狀態或活動變更"""
-        if before.bot:
-            return
-        if not await self._should_log(after.guild.id, "status_change"):
-            return
-
-        # 檢查 status 是否改變
-        status_changed = before.status != after.status
-
-        # 檢查活動 (CustomActivity 等)
-        def get_activity_info(member: discord.Member):
-            custom = None
-            other_acts = []
-            for act in member.activities:
-                if isinstance(act, discord.CustomActivity):
-                    custom = act.name or act.state
-                else:
-                    other_acts.append(f"{act.type.name.title()}: {act.name}")
-            return custom, other_acts
-
-        before_custom, before_others = get_activity_info(before)
-        after_custom, after_others = get_activity_info(after)
-
-        activity_changed = (before_custom != after_custom) or (before_others != after_others)
-
-        if not status_changed and not activity_changed:
-            return
-
-        # 限制同一個成員在同一個伺服器 30 秒內只能記錄一次狀態/活動變更，防範 429 速率限制
-        import time
-        now = time.time()
-        guild_id = after.guild.id
-        member_id = after.id
-
-        if guild_id not in self._presence_cooldowns:
-            self._presence_cooldowns[guild_id] = {}
-
-        last_time = self._presence_cooldowns[guild_id].get(member_id, 0)
-        if now - last_time < 30:
-            return
-
-        self._presence_cooldowns[guild_id][member_id] = now
-
-        embed = discord.Embed(
-            title="👤 成員狀態變更",
-            color=Colors.LOG_VOICE,
-        )
-        embed.set_author(name=f"{after.name}#{after.discriminator}", icon_url=after.display_avatar.url)
-        embed.add_field(name="**成員**", value=f"{after.mention} | id: {after.id}", inline=False)
-
-        status_names = {
-            discord.Status.online: "🟢 線上 (Online)",
-            discord.Status.idle: "🟡 閒置 (Idle)",
-            discord.Status.dnd: "🔴 請勿打擾 (Do Not Disturb)",
-            discord.Status.offline: "⚫ 離線 (Offline)"
-        }
-
-        if status_changed:
-            before_str = status_names.get(before.status, str(before.status))
-            after_str = status_names.get(after.status, str(after.status))
-            embed.add_field(name="**線上狀態變更**", value=f"`{before_str}` ➔ `{after_str}`", inline=False)
-
-        if activity_changed:
-            before_act = f"自訂狀態: {before_custom or '無'}"
-            if before_others:
-                before_act += f"\n其他活動: {', '.join(before_others)}"
-            
-            after_act = f"自訂狀態: {after_custom or '無'}"
-            if after_others:
-                after_act += f"\n其他活動: {', '.join(after_others)}"
-                
-            embed.add_field(name="**舊活動/自訂狀態**", value=before_act, inline=True)
-            embed.add_field(name="**新活動/自訂狀態**", value=after_act, inline=True)
-
-        embed.set_thumbnail(url=BadgeImages.STATUS_CHANGE)
-        EmbedFactory._add_server_footer(embed, after.guild, self.bot)
-
-        view = LogConfigButton()
-        await self._send_log(after.guild, embed, view)
-
-    @tasks.loop(minutes=10)
-    async def pro_reminder_loop(self):
-        """每 10 分鐘，若伺服器非 Pro/Ultra，則發送訂閱提示"""
-        if not getattr(self.bot, "is_active_node", True):
-            return
-        await self.bot.wait_until_ready()
-        for guild in self.bot.guilds:
-            try:
-                if not await self.db.is_guild_pro(guild.id):
-                    log_channel_id = await self.db.get_log_channel(guild.id)
-                    if log_channel_id:
-                        channel = guild.get_channel(log_channel_id)
-                        if channel:
-                            embed = discord.Embed(
-                                title="⭐ 升級為 Pro 或 Ultra",
-                                description=(
-                                    "💡 **系統提示**：此伺服器目前使用免費標準版日誌系統。\n"
-                                    "訂閱 **Pro** 或 **Ultra** 即可解鎖進階高頻日誌（新訊息即時記錄、打字中動態、成員狀態變更）！"
-                                ),
-                                color=Colors.WARNING
-                            )
-                            view = LogConfigButton()
-                            await channel.send(embed=embed, view=view)
-            except discord.HTTPException as e:
-                print(f"HTTP Error in pro_reminder_loop for guild {guild.id}: {e}")
-                # 如果是 5xx 伺服器錯誤（例如 503 Service Unavailable），直接中斷本次 loop，避免重複向其他公會發送請求並洗版
-                if e.status >= 500:
-                    print("⚠️ 偵測到 Discord API 5xx 伺服器錯誤，中斷本次 pro_reminder_loop。")
-                    break
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                print(f"Network Error in pro_reminder_loop for guild {guild.id}: {e}")
-                print("⚠️ 偵測到網路或 Proxy 連線錯誤，中斷本次 pro_reminder_loop。")
-                break
-            except Exception as e:
-                print(f"Error in pro_reminder_loop for guild {guild.id}: {e}")
 
     @commands.Cog.listener()
     async def on_command(self, ctx: commands.Context):

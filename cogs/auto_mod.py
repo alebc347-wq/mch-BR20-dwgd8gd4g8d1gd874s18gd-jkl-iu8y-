@@ -13,6 +13,8 @@ import json
 from config import Colors, Emoji, BadgeImages
 from utils.embeds import EmbedFactory
 
+URL_PATTERN = re.compile(r'https?://\S+', re.IGNORECASE)
+
 
 class AutoMod(commands.Cog):
     """自動審核系統"""
@@ -21,7 +23,7 @@ class AutoMod(commands.Cog):
         self.bot = bot
         self.db = bot.db
 
-    async def _is_whitelisted(self, message: discord.Message) -> bool:
+    async def _is_whitelisted(self, message: discord.Message, settings: dict | None = None) -> bool:
         """檢查是否在白名單中"""
         if not message.guild:
             return True
@@ -34,7 +36,8 @@ class AutoMod(commands.Cog):
         if message.author.guild_permissions.manage_messages:
             return True
         
-        settings = await self.db.get_guild_settings(message.guild.id)
+        if settings is None:
+            settings = await self.db.get_guild_settings(message.guild.id)
         
         # 白名單頻道
         whitelist_channels = json.loads(settings.get("automod_whitelist_channels") or "[]")
@@ -59,7 +62,7 @@ class AutoMod(commands.Cog):
         if not settings.get("automod_enabled"):
             return
         
-        if await self._is_whitelisted(message):
+        if await self._is_whitelisted(message, settings):
             return
         
         # 髒話過濾
@@ -83,8 +86,7 @@ class AutoMod(commands.Cog):
         
         # 連結過濾
         if settings.get("automod_links_enabled"):
-            url_pattern = re.compile(r'https?://\S+', re.IGNORECASE)
-            if url_pattern.search(message.content):
+            if URL_PATTERN.search(message.content):
                 await self._handle_violation(message, "連結過濾", "此頻道不允許發送連結")
                 return
         
@@ -107,7 +109,7 @@ class AutoMod(commands.Cog):
         """處理違規行為"""
         try:
             await message.delete()
-        except discord.Forbidden:
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
             pass
         
         # 發送警告通知

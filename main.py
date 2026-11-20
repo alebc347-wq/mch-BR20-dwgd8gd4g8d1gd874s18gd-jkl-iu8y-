@@ -64,8 +64,9 @@ commands.has_permissions = custom_commands_has_permissions
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=env_path, override=True)
 
-from config import BOT_TOKEN, BOT_PREFIX, BadgeImages
+from config import BOT_TOKEN, BOT_PREFIX, BOT_VERSION, BadgeImages, Colors
 from utils.database import Database
+from utils.speed_tier import speed_tier
 
 # ─── 動態狀態載入與儲存 ────────────────────────────────────────
 STATUSES_FILE = os.path.join(os.path.dirname(__file__), "data", "statuses.json")
@@ -150,9 +151,9 @@ async def restart(interaction: discord.Interaction):
     
     await interaction.followup.send("🔄 狀態已變更為 `機器人即將重新啟動`，正在執行重新啟動流程...", ephemeral=True)
     
-    # 3. 發送即將重啟通知至各伺服器的「顯示伺服器目前變動」頻道 (若未關閉通知)
+    # 3. 發送即將重啟通知至各伺服器的「顯示伺服器目前變動」頻道 (3.0 預設關閉防洗版，需手動開啟)
     for guild in bot.guilds:
-        if not await bot.db.is_feature_enabled(guild.id, "restart_notifications", True):
+        if not await bot.db.is_feature_enabled(guild.id, "restart_notifications", False):
             continue
             
         chan = discord.utils.get(guild.text_channels, name="顯示伺服器目前變動")
@@ -220,7 +221,7 @@ class ErrorReportView(discord.ui.View):
 class ProBot(commands.Bot):
     """專業 Discord Bot 主類別"""
 
-    def __init__(self):
+    def __init__(self, db_path: str | None = None):
         intents = discord.Intents.all()
         
         super().__init__(
@@ -234,12 +235,18 @@ class ProBot(commands.Bot):
             status=discord.Status.dnd,
         )
         
-        self.db = Database()
+        self.db = Database(db_path=db_path)
         self.tree.on_error = self.on_tree_error
         self.status_list = load_statuses()
         self._start_time = time.time()
         self.is_restarting = False
         self.exit_code = 0
+        self._ready_initialized = False
+        self._status_task: asyncio.Task | None = None
+        try:
+            self._coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
+        except ValueError:
+            self._coordination_channel_id = 0
 
         self.promo_statuses = self._load_promo_statuses()
         self.status_event = asyncio.Event()
@@ -268,11 +275,7 @@ class ProBot(commands.Bot):
         orig_dispatch_view = view_store.dispatch_view
         def new_dispatch_view(component_type, custom_id, interaction):
             if not getattr(self, "is_active_node", True):
-                coordination_channel_id = 0
-                try:
-                    coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
-                except Exception:
-                    pass
+                coordination_channel_id = getattr(self, "_coordination_channel_id", 0)
                 if coordination_channel_id <= 0 or interaction.channel_id != coordination_channel_id:
                     return
             orig_dispatch_view(component_type, custom_id, interaction)
@@ -282,11 +285,7 @@ class ProBot(commands.Bot):
         orig_dispatch_modal = view_store.dispatch_modal
         def new_dispatch_modal(custom_id, interaction, components, resolved):
             if not getattr(self, "is_active_node", True):
-                coordination_channel_id = 0
-                try:
-                    coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
-                except Exception:
-                    pass
+                coordination_channel_id = getattr(self, "_coordination_channel_id", 0)
                 if coordination_channel_id <= 0 or interaction.channel_id != coordination_channel_id:
                     return
             orig_dispatch_modal(custom_id, interaction, components, resolved)
@@ -392,6 +391,15 @@ class ProBot(commands.Bot):
             if getattr(ctx.bot, "is_resting", False) and not is_exempt:
                 raise commands.CheckFailure("REST_MODE_ACTIVE")
 
+            # 3. 倉鼠勇者 3.0 雙方案速率分流 (Pro 0秒極速 / 免費版 3秒標準節流)
+            cmd_name = ctx.command.name if ctx.command else ""
+            if not is_exempt and cmd_name not in {"help", "ping", "plan", "pro", "health"}:
+                allowed, retry_after, _ = await speed_tier.check_rate_limit(
+                    ctx.bot.db, ctx.guild.id if ctx.guild else None, ctx.author.id
+                )
+                if not allowed:
+                    raise commands.CheckFailure(f"FREE_TIER_COOLDOWN:{retry_after}")
+
             return True
 
         async def globally_check_interaction(interaction: discord.Interaction):
@@ -450,6 +458,31 @@ class ProBot(commands.Bot):
                         pass
                     return False
 
+            # 3. 倉鼠勇者 3.0 雙方案速率分流 (Pro 0秒極速通道 / 免費版 3.0秒節流)
+            cmd_name = interaction.command.name if interaction.command else ""
+            if cmd_name and cmd_name not in {"help", "ping", "plan", "pro", "health", "version"}:
+                allowed, retry_after, _ = await speed_tier.check_rate_limit(
+                    getattr(interaction.client, "db", None),
+                    interaction.guild_id,
+                    interaction.user.id,
+                    bypass=(interaction.user.id == BYPASS_USER_ID),
+                )
+                if not allowed:
+                    embed = discord.Embed(
+                        title="⏱️ 免費方案節流中",
+                        description=(
+                            f"請於 **`{retry_after}` 秒**後再試。\n"
+                            f"升級 **Pro 疾速方案**（`/plan`）即可解鎖 **0 秒無冷卻極速指令通道**。"
+                        ),
+                        color=Colors.PRIMARY,
+                    )
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message(embed=embed, ephemeral=True)
+                    except Exception:
+                        pass
+                    return False
+
             return True
 
         self.tree.interaction_check = globally_check_interaction
@@ -483,61 +516,65 @@ class ProBot(commands.Bot):
                     await self.tree.sync(guild=g)
                 except Exception:
                     pass
-        # 啟動完畢，切換回線上狀態，並設定預設活動
+        # 啟動完畢，切換回線上狀態，並設定 3.0 預設活動
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="伺服器 | .help",
+                name=f"倉鼠勇者 {BOT_VERSION} | /help",
             ),
             status=discord.Status.online,
         )
 
-        # 註冊持久性 View
-        from cogs.logging_cog import LogConfigButton
-        self.add_view(LogConfigButton())
+        # 註冊持久性 View（僅首次啟動時執行，避免斷線重連後重複註冊與重複啟動背景任務）
+        if not self._ready_initialized:
+            self._ready_initialized = True
 
-        # 註冊申訴面板永久 View
-        try:
-            from cogs.appeal import AppealPanelView, AppealButton
-            self.add_view(AppealPanelView())
-        except Exception as e:
-            print(f"[Appeal] 無法註冊永久 View: {e}")
+            from cogs.logging_cog import LogConfigButton
+            self.add_view(LogConfigButton())
 
-        # 註冊抽獎永久 View
-        try:
-            from cogs.giveaway import GiveawayJoinButton
-            self.add_view(GiveawayJoinButton())
-        except Exception as e:
-            print(f"[Giveaway] 無法註冊永久 View: {e}")
-
-        # 檢查是否有重啟標記，若有則在「顯示伺服器目前變動」頻道發送成功重啟通知 (若未關閉通知)
-        RESTART_FLAG_FILE = os.path.join(os.path.dirname(__file__), "data", "restart_flag.json")
-        if os.path.exists(RESTART_FLAG_FILE):
+            # 註冊申訴面板永久 View
             try:
-                os.remove(RESTART_FLAG_FILE)
-                for guild in self.guilds:
-                    if not await self.db.is_feature_enabled(guild.id, "restart_notifications", True):
-                        continue
-                        
-                    chan = discord.utils.get(guild.text_channels, name="顯示伺服器目前變動")
-                    if chan:
-                        try:
-                            from cogs.logging_cog import LogConfigButton
-                            view = LogConfigButton()
-                            embed = discord.Embed(
-                                title="✅ 系統已恢復運作",
-                                description="機器人已重新啟動成功！目前已恢復正常運作。",
-                                color=discord.Color.green()
-                            )
-                            embed.set_thumbnail(url=BadgeImages.RESTART)
-                            await chan.send(embed=embed, view=view)
-                        except Exception as ex:
-                            print(f"Error sending restart success notification to {guild.name}: {ex}")
+                from cogs.appeal import AppealPanelView, AppealButton
+                self.add_view(AppealPanelView())
             except Exception as e:
-                print(f"處理重啟成功通知時出錯: {e}")
+                print(f"[Appeal] 無法註冊永久 View: {e}")
 
-        # 啟動動態狀態輪替
-        asyncio.create_task(self._cycle_status())
+            # 註冊抽獎永久 View
+            try:
+                from cogs.giveaway import GiveawayJoinButton
+                self.add_view(GiveawayJoinButton())
+            except Exception as e:
+                print(f"[Giveaway] 無法註冊永久 View: {e}")
+
+            # 檢查是否有重啟標記，若有則在「顯示伺服器目前變動」頻道發送成功重啟通知 (若未關閉通知)
+            RESTART_FLAG_FILE = os.path.join(os.path.dirname(__file__), "data", "restart_flag.json")
+            if os.path.exists(RESTART_FLAG_FILE):
+                try:
+                    os.remove(RESTART_FLAG_FILE)
+                    for guild in self.guilds:
+                        if not await self.db.is_feature_enabled(guild.id, "restart_notifications", False):
+                            continue
+                            
+                        chan = discord.utils.get(guild.text_channels, name="顯示伺服器目前變動")
+                        if chan:
+                            try:
+                                from cogs.logging_cog import LogConfigButton
+                                view = LogConfigButton()
+                                embed = discord.Embed(
+                                    title="✅ 系統已恢復運作",
+                                    description="機器人已重新啟動成功！目前已恢復正常運作。",
+                                    color=discord.Color.green()
+                                )
+                                embed.set_thumbnail(url=BadgeImages.RESTART)
+                                await chan.send(embed=embed, view=view)
+                            except Exception as ex:
+                                print(f"Error sending restart success notification to {guild.name}: {ex}")
+                except Exception as e:
+                    print(f"處理重啟成功通知時出錯: {e}")
+
+            # 啟動動態狀態輪替
+            if self._status_task is None or self._status_task.done():
+                self._status_task = asyncio.create_task(self._cycle_status())
 
     async def on_message(self, message: discord.Message):
         """處理訊息，並觸發指令"""
@@ -679,7 +716,7 @@ class ProBot(commands.Bot):
                 return await self.send_error_response(
                     interaction_or_ctx=interaction,
                     title="❌ 權限不足",
-                    description="無法執行此操作：Bot 缺少執行此操作 of Discord 權限（例如：管理成員/禁言、踢出、封禁成員或管理訊息權限），或是該成員的角色階層高於 Bot 的最高角色角色組。",
+                    description="無法執行此操作：Bot 缺少執行此操作的 Discord 權限（例如：管理成員/禁言、踢出、封禁成員或管理訊息權限），或是該成員的角色階層高於 Bot 的最高角色組。",
                     error=original_error,
                     color=0xED4245,
                     badge_url=BadgeImages.ERROR
@@ -734,17 +771,30 @@ class ProBot(commands.Bot):
         if not getattr(self, "is_active_node", True):
             return
 
-        # 休息模式阻擋提示
+        # 休息模式與 3.0 免費方案節流阻擋提示
         if isinstance(error, commands.CheckFailure):
-            if str(error) == "REST_MODE_ACTIVE" or getattr(self, "is_resting", False):
+            err_str = str(error)
+            if err_str.startswith("FREE_TIER_COOLDOWN:"):
+                retry_after = err_str.split(":", 1)[1]
+                embed = discord.Embed(
+                    title="⏱️ 免費方案節流中",
+                    description=f"請於 **`{retry_after}` 秒**後再試。使用 `/plan` 升級 **Pro 疾速方案**可享 0 秒無冷卻連發。",
+                    color=Colors.PRIMARY,
+                )
+                try:
+                    await ctx.send(embed=embed, delete_after=4)
+                except Exception:
+                    pass
+                return
+            if err_str == "REST_MODE_ACTIVE" or getattr(self, "is_resting", False):
                 info = getattr(self, "rest_info", {})
                 end_time_str = info.get("end_time_str", "未指定")
                 embed = discord.Embed(
                     title="💤 機器人正在休息中 (低耗電模式)",
                     description=(
-                        f"目前機器人處於**低耗電休息模式**，前綴指令已暫停使用以節省伺服器負載。\n\n"
+                        f"目前機器人處於**低耗電休息模式**，所有一般指令（包含前綴指令與斜線指令 `/`）已暫停使用以節省伺服器負載。\n\n"
                         f"⏰ **預計喚醒時間:** `{end_time_str}`\n"
-                        f"✨ **可用功能:** **【斜線指令 `/`】** 與 **【自動天災/安全檢測】** 仍維持正常運作！"
+                        f"🛡️ **背景自動檢測系統**（如天災地震速報、雙主機容災）仍維持全天候運作！"
                     ),
                     color=discord.Color.dark_purple()
                 )
@@ -833,21 +883,21 @@ class ProBot(commands.Bot):
 
     async def close(self):
         """Bot 關閉時清理"""
+        if self._status_task and not self._status_task.done():
+            self._status_task.cancel()
         await self.db.close()
         await super().close()
 
 
 def early_disk_cleanup():
-    """在 Python 啟動初期清理 data 暫存媒體與殘留快取檔案"""
+    """在 Python 啟動初期透過 3.0 終極清暫存引擎釋放暫存與快取檔案"""
     try:
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-        if os.path.isdir(data_dir):
-            for fname in os.listdir(data_dir):
-                if fname.endswith((".mp3", ".wav", ".png", ".jpg", ".tmp", ".bak", ".log", ".db-wal", ".db-shm")):
-                    try:
-                        os.remove(os.path.join(data_dir, fname))
-                    except Exception:
-                        pass
+        from utils.cleaner import run_sync_cleanup
+        run_sync_cleanup(
+            root=os.path.dirname(os.path.abspath(__file__)),
+            include_system_caches=False,
+            remove_update_pack=False,
+        )
     except Exception:
         pass
 
