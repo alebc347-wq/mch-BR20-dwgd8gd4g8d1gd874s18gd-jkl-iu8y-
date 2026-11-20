@@ -400,83 +400,94 @@ class ProBot(commands.Bot):
             return True
 
         async def globally_check_interaction(interaction: discord.Interaction):
-            coordination_channel_id = resolve_coordination_channel_id()
-
-            # 全域黑名單過濾 (Anti-Plagiarism & Global Blacklist Filter)
-            if hasattr(interaction.client, "db") and interaction.client.db:
-                try:
-                    if await interaction.client.db.is_blacklisted(interaction.user.id):
-                        return False
-                    if interaction.guild_id and await interaction.client.db.is_blacklisted(interaction.guild_id):
-                        return False
-                except Exception:
-                    pass
-
-            is_active = getattr(interaction.client, "is_active_node", True)
-
-            # 若本機為備用機 (Idle)，僅允許在總控頻道響應緊急控制按鈕，其餘所有指令與互動一律靜默
-            if not is_active:
-                if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
-                    custom_id = getattr(interaction, "data", {}).get("custom_id", "")
-                    if custom_id in {
-                        "force_active_1", "force_active_2", "auto_schedule", "sync_btn", "reboot_btn", "restart_btn",
-                        "force_wisp1", "force_wisp2", "release_lock", "restart_wisp1", "restart_wisp2", "sync_wisp1", "sync_wisp2"
-                    }:
-                        return True
-                return False
-
-            # 休息模式過濾：若機器人處於低耗電休息狀態，禁用所有一般 Slash 指令 (豁免 /rest 與 BYPASS_USER_ID)
-            if getattr(interaction.client, "is_resting", False):
-                cmd_name = interaction.command.name if interaction.command else ""
+            try:
+                coordination_channel_id = resolve_coordination_channel_id()
                 is_bypass = (interaction.user.id == BYPASS_USER_ID)
-                is_exempt_cmd = (cmd_name in {"rest", "休息", "sleep", "低耗電"})
-
-                if not (is_bypass or is_exempt_cmd):
-                    info = getattr(interaction.client, "rest_info", {})
-                    end_time_str = info.get("end_time_str", "未指定")
-                    embed = discord.Embed(
-                        title="💤 機器人正在休息中 (低耗電模式)",
-                        description=(
-                            f"目前機器人處於**低耗電休息模式**，所有指令（包含斜線指令 `/`）已全面暫停使用以節省伺服器負載。\n\n"
-                            f"⏰ **預計喚醒時間:** `{end_time_str}`\n"
-                            f"🛡️ **背景自動檢測系統**（如天災地震速報、雙主機容災）仍維持全天候運作。"
-                        ),
-                        color=discord.Color.dark_purple()
-                    )
-                    embed.set_footer(text="若需解除休息模式，請管理者使用 .rest off 或 /rest")
-                    try:
-                        if not interaction.response.is_done():
-                            await interaction.response.send_message(embed=embed, ephemeral=True)
-                    except Exception:
-                        pass
-                    return False
-
-            # 3. 倉鼠勇者 3.0 雙方案速率分流 (Pro 0秒極速通道 / 免費版 3.0秒節流)
-            cmd_name = interaction.command.name if interaction.command else ""
-            if cmd_name and cmd_name not in {"help", "ping", "plan", "pro", "health", "version"}:
-                allowed, retry_after, _ = await speed_tier.check_rate_limit(
-                    getattr(interaction.client, "db", None),
-                    interaction.guild_id,
-                    interaction.user.id,
-                    bypass=(interaction.user.id == BYPASS_USER_ID),
+                is_active = getattr(interaction.client, "is_active_node", True)
+                cmd_name = interaction.command.name if interaction.command else ""
+                print(
+                    f"📨 [Slash] 收到互動 /{cmd_name or 'component'} | "
+                    f"active={is_active} | user={interaction.user.id} | guild={interaction.guild_id}"
                 )
-                if not allowed:
-                    embed = discord.Embed(
-                        title="⏱️ 免費方案節流中",
-                        description=(
-                            f"請於 **`{retry_after}` 秒**後再試。\n"
-                            f"升級 **Pro 疾速方案**（`/plan`）即可解鎖 **0 秒無冷卻極速指令通道**。"
-                        ),
-                        color=Colors.PRIMARY,
-                    )
+
+                # 全域黑名單過濾 (Anti-Plagiarism & Global Blacklist Filter；豁免 BYPASS_USER_ID)
+                if not is_bypass and hasattr(interaction.client, "db") and interaction.client.db:
                     try:
-                        if not interaction.response.is_done():
-                            await interaction.response.send_message(embed=embed, ephemeral=True)
+                        if await interaction.client.db.is_blacklisted(interaction.user.id):
+                            print(f"🚫 [Slash] 全域黑名單攔截使用者: {interaction.user.id}")
+                            return False
+                        if interaction.guild_id and await interaction.client.db.is_blacklisted(interaction.guild_id):
+                            print(f"🚫 [Slash] 全域黑名單攔截伺服器: {interaction.guild_id}")
+                            return False
                     except Exception:
                         pass
+
+                # 若本機為備用機 (Idle)，僅允許在總控頻道響應緊急控制按鈕，其餘所有指令與互動一律靜默
+                if not is_active:
+                    if coordination_channel_id > 0 and interaction.channel_id == coordination_channel_id:
+                        custom_id = getattr(interaction, "data", {}).get("custom_id", "")
+                        if custom_id in {
+                            "force_active_1", "force_active_2", "auto_schedule", "sync_btn", "reboot_btn", "restart_btn",
+                            "force_wisp1", "force_wisp2", "release_lock", "restart_wisp1", "restart_wisp2", "sync_wisp1", "sync_wisp2"
+                        }:
+                            return True
+                    print(f"💤 [Slash] 本機為 Idle 忽略指令 /{cmd_name or 'component'}")
                     return False
 
-            return True
+                # 休息模式過濾：若機器人處於低耗電休息狀態，禁用所有一般 Slash 指令 (豁免 /rest 與 BYPASS_USER_ID)
+                if getattr(interaction.client, "is_resting", False):
+                    is_exempt_cmd = (cmd_name in {"rest", "休息", "sleep", "低耗電"})
+
+                    if not (is_bypass or is_exempt_cmd):
+                        info = getattr(interaction.client, "rest_info", {})
+                        end_time_str = info.get("end_time_str", "未指定")
+                        embed = discord.Embed(
+                            title="💤 機器人正在休息中 (低耗電模式)",
+                            description=(
+                                f"目前機器人處於**低耗電休息模式**，所有指令（包含斜線指令 `/`）已全面暫停使用以節省伺服器負載。\n\n"
+                                f"⏰ **預計喚醒時間:** `{end_time_str}`\n"
+                                f"🛡️ **背景自動檢測系統**（如天災地震速報、雙主機容災）仍維持全天候運作。"
+                            ),
+                            color=discord.Color.dark_purple()
+                        )
+                        embed.set_footer(text="若需解除休息模式，請管理者使用 .rest off 或 /rest")
+                        try:
+                            if not interaction.response.is_done():
+                                await interaction.response.send_message(embed=embed, ephemeral=True)
+                        except Exception:
+                            pass
+                        return False
+
+                # 3. 倉鼠勇者 3.0 雙方案速率分流 (Pro 0秒極速通道 / 免費版 3.0秒節流)
+                if cmd_name and cmd_name not in {"help", "ping", "plan", "pro", "health", "version"}:
+                    allowed, retry_after, _ = await speed_tier.check_rate_limit(
+                        getattr(interaction.client, "db", None),
+                        interaction.guild_id,
+                        interaction.user.id,
+                        bypass=is_bypass,
+                    )
+                    if not allowed:
+                        embed = discord.Embed(
+                            title="⏱️ 免費方案節流中",
+                            description=(
+                                f"請於 **`{retry_after}` 秒**後再試。\n"
+                                f"升級 **Pro 疾速方案**（`/plan`）即可解鎖 **0 秒無冷卻極速指令通道**。"
+                            ),
+                            color=Colors.PRIMARY,
+                        )
+                        try:
+                            if not interaction.response.is_done():
+                                await interaction.response.send_message(embed=embed, ephemeral=True)
+                        except Exception:
+                            pass
+                        return False
+
+                return True
+            except Exception as exc:
+                import traceback
+                print(f"❌ [Slash] globally_check_interaction 發生未預期錯誤: {exc}", file=sys.stderr)
+                traceback.print_exc()
+                return True
 
         self.tree.interaction_check = globally_check_interaction
 

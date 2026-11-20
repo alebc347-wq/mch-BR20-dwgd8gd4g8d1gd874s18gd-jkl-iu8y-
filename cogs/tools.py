@@ -2127,6 +2127,9 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
                         permissions=discord.Permissions.none(),
                         reason="自動建立聊天等級角色組"
                     )
+                except discord.Forbidden as e:
+                    print(f"⚠️ 建立 {role_name} 角色組權限受限，已跳過本伺服器剩餘等級角色建立: {e}")
+                    break
                 except Exception as e:
                     print(f"⚠️ 建立 {role_name} 角色組失敗: {e}")
                     continue
