@@ -16,6 +16,24 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN", "")
 BOT_PREFIX = os.getenv("BOT_PREFIX", ".")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
+# ─── 雙主機總控協調頻道設定 ──────────────────────────────────
+DEFAULT_COORDINATION_CHANNEL_ID = 1573278907996577953
+LEGACY_COORDINATION_CHANNEL_IDS = {1473141984855199856}
+
+
+def resolve_coordination_channel_id() -> int:
+    """解析總控協調頻道 ID；若 .env 仍殘留已刪除之舊頻道 ID，自動遷移至新總控頻道。"""
+    raw = (os.getenv("COORDINATION_CHANNEL_ID") or "").strip()
+    if not raw:
+        return 0
+    try:
+        cid = int(raw)
+    except ValueError:
+        return 0
+    if cid in LEGACY_COORDINATION_CHANNEL_IDS:
+        return DEFAULT_COORDINATION_CHANNEL_ID
+    return cid
+
 # ─── Lavalink 音樂設定 ──────────────────────────────────────
 LAVALINK_HOST = os.getenv("LAVALINK_HOST", "lavalinkv4.serenetia.com")
 LAVALINK_PORT = int(os.getenv("LAVALINK_PORT", "443"))

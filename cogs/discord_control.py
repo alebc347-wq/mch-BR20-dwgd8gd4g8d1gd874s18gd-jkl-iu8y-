@@ -6,6 +6,7 @@ import asyncio
 import random
 import discord
 from discord.ext import commands, tasks
+from config import resolve_coordination_channel_id
 
 # 全域權限繞過 ID
 BYPASS_USER_ID = 1437408048934027274
@@ -66,8 +67,9 @@ class DiscordControl(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.server_id = os.getenv("SERVER_ID")
-        channel_id_str = os.getenv("COORDINATION_CHANNEL_ID")
-        self.channel_id = int(channel_id_str) if channel_id_str and channel_id_str.isdigit() else None
+        resolved_channel_id = resolve_coordination_channel_id()
+        self.channel_id = resolved_channel_id if resolved_channel_id > 0 else None
+        self._channel_miss_count = 0
         
         # 預設狀態
         self.bot.is_active_node = True
@@ -372,8 +374,20 @@ class DiscordControl(commands.Cog):
         
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
-            print(f"❌ 總控協調失敗：找不到頻道 ID {self.channel_id}")
+            try:
+                channel = await self.bot.fetch_channel(self.channel_id)
+            except Exception:
+                channel = None
+        if not channel:
+            self._channel_miss_count += 1
+            print(f"❌ 總控協調失敗：找不到頻道 ID {self.channel_id} (累計 {self._channel_miss_count} 次)")
+            # 容災保底：若連續 2 次找不到總控頻道，主節點自動接管，防止雙機鎖死在 Idle 導致全面無回應
+            if self._channel_miss_count >= 2 and self.server_id != "wispbyte-2":
+                if not getattr(self.bot, "is_active_node", True):
+                    print("⚠️ 總控頻道遺失，觸發緊急容災：本機自動升格為 Active 以恢復服務！")
+                    self.bot.is_active_node = True
             return
+        self._channel_miss_count = 0
             
         # 第一次啟動時，非同步嘗試還原最新的雲端資料庫
         if not hasattr(self, "_has_restored"):

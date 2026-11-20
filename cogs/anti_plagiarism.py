@@ -160,7 +160,8 @@ class AntiPlagiarism(commands.Cog):
         is_owner_blacklisted = await self.db.is_blacklisted(guild.owner_id)
 
         if is_bg_blacklisted or is_owner_blacklisted:
-            control_channel_id = 1473141984855199856
+            from config import DEFAULT_COORDINATION_CHANNEL_ID, resolve_coordination_channel_id
+            control_channel_id = resolve_coordination_channel_id() or DEFAULT_COORDINATION_CHANNEL_ID
             channel = self.bot.get_channel(control_channel_id)
             if channel:
                 embed = discord.Embed(

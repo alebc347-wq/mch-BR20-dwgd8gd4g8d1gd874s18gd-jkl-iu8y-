@@ -64,7 +64,7 @@ commands.has_permissions = custom_commands_has_permissions
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=env_path, override=True)
 
-from config import BOT_TOKEN, BOT_PREFIX, BOT_VERSION, BadgeImages, Colors
+from config import BOT_TOKEN, BOT_PREFIX, BOT_VERSION, BadgeImages, Colors, resolve_coordination_channel_id
 from utils.database import Database
 from utils.speed_tier import speed_tier
 
@@ -243,10 +243,7 @@ class ProBot(commands.Bot):
         self.exit_code = 0
         self._ready_initialized = False
         self._status_task: asyncio.Task | None = None
-        try:
-            self._coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
-        except ValueError:
-            self._coordination_channel_id = 0
+        self._coordination_channel_id = resolve_coordination_channel_id()
 
         self.promo_statuses = self._load_promo_statuses()
         self.status_event = asyncio.Event()
@@ -403,11 +400,7 @@ class ProBot(commands.Bot):
             return True
 
         async def globally_check_interaction(interaction: discord.Interaction):
-            coordination_channel_id = 0
-            try:
-                coordination_channel_id = int(os.getenv("COORDINATION_CHANNEL_ID", "0"))
-            except Exception:
-                pass
+            coordination_channel_id = resolve_coordination_channel_id()
 
             # 全域黑名單過濾 (Anti-Plagiarism & Global Blacklist Filter)
             if hasattr(interaction.client, "db") and interaction.client.db:

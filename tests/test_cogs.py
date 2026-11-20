@@ -145,3 +145,54 @@ class TestSystemIntegrity(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ok)
             self.assertTrue(is_pro)
             self.assertEqual(wait, 0.0)
+
+    async def test_tool_delete_channels_modes(self):
+        """驗證 /tool delete_channels 三種模式（刪除全部 / 保留指定 / 刪除指定）與排序邏輯"""
+        import discord
+        from unittest.mock import MagicMock
+        from cogs.tools import Tools, _compute_channels_to_delete
+
+        await self.bot.load_extension("cogs.tools")
+        cog = self.bot.get_cog("tool") or self.bot.get_cog("Tools")
+        self.assertIsNotNone(cog)
+        cmd_names = [cmd.name for cmd in cog.app_command.commands]
+        self.assertIn("delete_channels", cmd_names)
+
+        ch_text1 = MagicMock(spec=discord.TextChannel)
+        ch_text1.id, ch_text1.name = 101, "general"
+        ch_text2 = MagicMock(spec=discord.TextChannel)
+        ch_text2.id, ch_text2.name = 102, "chat"
+        ch_cat = MagicMock(spec=discord.CategoryChannel)
+        ch_cat.id, ch_cat.name = 201, "info-cat"
+        channels = [ch_cat, ch_text1, ch_text2]
+
+        # 1. 刪除所有頻道（含分類，且發起頻道 101 排最後）
+        all_targets = _compute_channels_to_delete(channels, "all", set(), include_categories=True, origin_channel_id=101)
+        self.assertEqual([c.id for c in all_targets], [102, 201, 101])
+
+        # 2. 刪除所有頻道（不含分類）
+        all_no_cat = _compute_channels_to_delete(channels, "all", set(), include_categories=False, origin_channel_id=101)
+        self.assertEqual([c.id for c in all_no_cat], [102, 101])
+
+        # 3. 保留指定頻道（保留 101）
+        keep_targets = _compute_channels_to_delete(channels, "keep", {101}, include_categories=True, origin_channel_id=101)
+        self.assertEqual([c.id for c in keep_targets], [102, 201])
+
+        # 4. 僅刪除指定頻道（只刪 102 與 201）
+        spec_targets = _compute_channels_to_delete(channels, "specific", {102, 201}, include_categories=False, origin_channel_id=101)
+        self.assertEqual([c.id for c in spec_targets], [102, 201])
+
+    async def test_coordination_channel_legacy_migration(self):
+        """驗證已刪除之舊總控頻道 ID 自動遷移至新總控頻道 1573278907996577953"""
+        from unittest.mock import patch
+        from config import DEFAULT_COORDINATION_CHANNEL_ID, resolve_coordination_channel_id
+
+        with patch.dict(os.environ, {"COORDINATION_CHANNEL_ID": "1473141984855199856"}):
+            self.assertEqual(resolve_coordination_channel_id(), DEFAULT_COORDINATION_CHANNEL_ID)
+            self.assertEqual(resolve_coordination_channel_id(), 1573278907996577953)
+
+        with patch.dict(os.environ, {"COORDINATION_CHANNEL_ID": "1573278907996577953"}):
+            self.assertEqual(resolve_coordination_channel_id(), 1573278907996577953)
+
+        with patch.dict(os.environ, {"COORDINATION_CHANNEL_ID": ""}):
+            self.assertEqual(resolve_coordination_channel_id(), 0)

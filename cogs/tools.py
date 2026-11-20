@@ -6,6 +6,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 import aiohttp
 import urllib.parse
 import io
@@ -918,6 +919,354 @@ class TTSInteractiveView(discord.ui.View):
                 color=Colors.ERROR
             )
             await interaction.edit_original_response(embed=error_embed, view=self)
+
+
+def _compute_channels_to_delete(
+    channels,
+    mode: str,
+    selected_ids: set[int],
+    include_categories: bool = True,
+    origin_channel_id: int | None = None,
+) -> list:
+    """依據模式計算待刪除頻道清單，並將分類與發起頻道排至最後刪除。"""
+    targets = []
+    for ch in channels:
+        is_category = isinstance(ch, discord.CategoryChannel)
+        if mode == "all":
+            if not include_categories and is_category:
+                continue
+            targets.append(ch)
+        elif mode == "keep":
+            if ch.id in selected_ids:
+                continue
+            if not include_categories and is_category:
+                continue
+            targets.append(ch)
+        elif mode == "specific":
+            if ch.id in selected_ids:
+                targets.append(ch)
+
+    targets.sort(
+        key=lambda ch: (
+            1 if (origin_channel_id is not None and ch.id == origin_channel_id) else 0,
+            1 if isinstance(ch, discord.CategoryChannel) else 0,
+        )
+    )
+    return targets
+
+
+class ChannelDeleteConfirmView(discord.ui.View):
+    """批次刪除頻道二次確認面板"""
+
+    def __init__(self, manager_view: "ChannelDeleteManagerView", targets: list):
+        super().__init__(timeout=120)
+        self.manager_view = manager_view
+        self.targets = targets
+        self.confirm_btn.label = f"🔥 確認永久刪除 ({len(targets)} 個頻道)"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.manager_view.author_id:
+            await interaction.response.send_message("❌ 只有指令發起人能操作此確認面板。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🔥 確認永久刪除", style=discord.ButtonStyle.danger, row=0)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = self.manager_view.guild
+        if not guild.me.guild_permissions.manage_channels:
+            return await interaction.response.edit_message(
+                embed=EmbedFactory.error("權限不足", "機器人缺少 `管理頻道 (Manage Channels)` 權限，無法執行刪除。"),
+                view=None,
+            )
+
+        for item in self.children:
+            item.disabled = True
+
+        progress_embed = discord.Embed(
+            title="🗑️ 正在批次刪除頻道...",
+            description=f"預計刪除 **{len(self.targets)}** 個頻道，請稍候...",
+            color=Colors.WARNING,
+        )
+        await interaction.response.edit_message(embed=progress_embed, view=self)
+
+        deleted_count = 0
+        failed: list[str] = []
+        reason = f"由 {interaction.user} ({interaction.user.id}) 透過 /tool delete_channels 批次刪除"
+
+        for ch in self.targets:
+            live_ch = guild.get_channel(ch.id)
+            if live_ch is None:
+                continue
+            try:
+                await live_ch.delete(reason=reason)
+                deleted_count += 1
+            except discord.Forbidden:
+                failed.append(f"`#{live_ch.name}` (權限不足)")
+            except discord.HTTPException as e:
+                failed.append(f"`#{live_ch.name}` ({e.status})")
+            await asyncio.sleep(0.35)
+
+        result_lines = [
+            f"✅ 成功刪除：**{deleted_count}** 個頻道",
+            f"⚠️ 刪除失敗：**{len(failed)}** 個頻道",
+        ]
+        if failed:
+            preview_failed = "\n".join(f"• {item}" for item in failed[:15])
+            if len(failed) > 15:
+                preview_failed += f"\n… 還有 {len(failed) - 15} 個失敗項目"
+            result_lines.append(f"\n**失敗明細：**\n{preview_failed}")
+
+        result_embed = discord.Embed(
+            title="🗑️ 頻道批次刪除完成",
+            description="\n".join(result_lines),
+            color=Colors.SUCCESS if not failed else Colors.WARNING,
+        )
+        result_embed.set_footer(text=f"伺服器：{guild.name}")
+
+        try:
+            await interaction.edit_original_response(embed=result_embed, view=None)
+        except discord.HTTPException:
+            # 若執行指令的原頻道本身也已被刪除，改以私訊回報結果
+            try:
+                await interaction.user.send(embed=result_embed)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="🔙 返回設定", style=discord.ButtonStyle.secondary, row=0)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.manager_view._sync_ui()
+        await interaction.response.edit_message(
+            embed=self.manager_view.build_embed(),
+            view=self.manager_view,
+        )
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.secondary, row=0)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            embed=EmbedFactory.info("已取消操作", "未刪除任何頻道。"),
+            view=None,
+        )
+
+
+class ChannelDeleteManagerView(discord.ui.View):
+    """批次刪除頻道互動設定面板：支援 刪除全部 / 保留指定 / 刪除指定"""
+
+    MODE_LABELS = {
+        "all": "💥 刪除所有頻道",
+        "keep": "🛡️ 刪除其他頻道（保留指定頻道）",
+        "specific": "🎯 僅刪除指定頻道",
+    }
+
+    def __init__(
+        self,
+        guild: discord.Guild,
+        author_id: int,
+        origin_channel_id: int | None,
+        mode: str = "specific",
+        include_categories: bool = True,
+    ):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.author_id = author_id
+        self.origin_channel_id = origin_channel_id
+        self.mode = mode if mode in self.MODE_LABELS else "specific"
+        self.include_categories = include_categories
+        self.selected_ids: set[int] = set()
+        self._sync_ui()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ 只有指令發起人能操作此面板。", ephemeral=True)
+            return False
+        return True
+
+    def _sync_ui(self):
+        self.mode_all_btn.style = (
+            discord.ButtonStyle.primary if self.mode == "all" else discord.ButtonStyle.secondary
+        )
+        self.mode_keep_btn.style = (
+            discord.ButtonStyle.primary if self.mode == "keep" else discord.ButtonStyle.secondary
+        )
+        self.mode_specific_btn.style = (
+            discord.ButtonStyle.primary if self.mode == "specific" else discord.ButtonStyle.secondary
+        )
+
+        if self.mode == "all":
+            self.channel_select.disabled = True
+            self.channel_select.placeholder = "目前為【刪除所有頻道】模式，無需挑選頻道"
+        elif self.mode == "keep":
+            self.channel_select.disabled = False
+            self.channel_select.placeholder = "選擇要【保留】的頻道（可多選，最多 25 個）"
+        else:
+            self.channel_select.disabled = False
+            self.channel_select.placeholder = "選擇要【刪除】的頻道（可多選，最多 25 個）"
+
+        self.toggle_cat_btn.label = (
+            f"📁 包含分類：{'開啟' if self.include_categories else '關閉'}"
+        )
+        self.clear_select_btn.disabled = (self.mode == "all" or not self.selected_ids)
+
+    def build_embed(self) -> discord.Embed:
+        targets = _compute_channels_to_delete(
+            self.guild.channels,
+            self.mode,
+            self.selected_ids,
+            include_categories=self.include_categories,
+            origin_channel_id=self.origin_channel_id,
+        )
+        total_channels = len(self.guild.channels)
+        kept_count = total_channels - len(targets)
+
+        embed = discord.Embed(
+            title="🗑️ 批次刪除頻道控制台",
+            description=(
+                f"**目前模式**：{self.MODE_LABELS[self.mode]}\n"
+                f"**包含分類頻道**：`{'是' if self.include_categories else '否'}`\n"
+                f"**伺服器總頻道數**：`{total_channels}` 個\n"
+                f"**預計刪除**：`{len(targets)}` 個　｜　**預計保留**：`{kept_count}` 個"
+            ),
+            color=Colors.ERROR if self.mode == "all" else Colors.WARNING,
+        )
+
+        if self.mode in ("keep", "specific"):
+            role_label = "🛡️ 已選擇要【保留】的頻道" if self.mode == "keep" else "🎯 已選擇要【刪除】的頻道"
+            if self.selected_ids:
+                names = []
+                for cid in self.selected_ids:
+                    ch = self.guild.get_channel(cid)
+                    if ch:
+                        prefix = "📁 " if isinstance(ch, discord.CategoryChannel) else "#"
+                        names.append(f"`{prefix}{ch.name}`")
+                val = ", ".join(names[:25]) if names else "（無有效頻道）"
+            else:
+                val = "尚未選擇任何頻道，請從下方下拉選單挑選。"
+            embed.add_field(name=role_label, value=val, inline=False)
+        else:
+            embed.add_field(
+                name="⚠️ 高風險警告",
+                value="您已選擇**刪除所有頻道**，按下「下一步」確認後將會永久刪除伺服器內所有符合條件的頻道且無法復原！",
+                inline=False,
+            )
+
+        embed.set_footer(text="設定完成後點擊「⚠️ 下一步：確認執行」進行最終確認")
+        return embed
+
+    @discord.ui.button(label="💥 刪除所有頻道", style=discord.ButtonStyle.secondary, row=0)
+    async def mode_all_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "all"
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="🛡️ 保留指定頻道", style=discord.ButtonStyle.secondary, row=0)
+    async def mode_keep_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "keep"
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="🎯 刪除指定頻道", style=discord.ButtonStyle.secondary, row=0)
+    async def mode_specific_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "specific"
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.select(
+        cls=discord.ui.ChannelSelect,
+        placeholder="選擇頻道（可多選，最多 25 個）",
+        min_values=1,
+        max_values=25,
+        channel_types=[
+            discord.ChannelType.text,
+            discord.ChannelType.voice,
+            discord.ChannelType.category,
+            discord.ChannelType.news,
+            discord.ChannelType.stage_voice,
+            discord.ChannelType.forum,
+        ],
+        row=1,
+    )
+    async def channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        self.selected_ids = {ch.id for ch in select.values}
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="📁 包含分類：開啟", style=discord.ButtonStyle.secondary, row=2)
+    async def toggle_cat_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.include_categories = not self.include_categories
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="🧹 清空已選", style=discord.ButtonStyle.secondary, row=2)
+    async def clear_select_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.selected_ids.clear()
+        self._sync_ui()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="⚠️ 下一步：確認執行", style=discord.ButtonStyle.danger, row=2)
+    async def proceed_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.mode == "specific" and not self.selected_ids:
+            return await interaction.response.send_message(
+                "❌ 請先從下拉選單選擇至少一個要刪除的頻道。", ephemeral=True
+            )
+        if self.mode == "keep" and not self.selected_ids:
+            return await interaction.response.send_message(
+                "❌ 請先從下拉選單選擇要保留的頻道（若要全部刪除，請切換至「💥 刪除所有頻道」）。",
+                ephemeral=True,
+            )
+
+        targets = _compute_channels_to_delete(
+            self.guild.channels,
+            self.mode,
+            self.selected_ids,
+            include_categories=self.include_categories,
+            origin_channel_id=self.origin_channel_id,
+        )
+        if not targets:
+            return await interaction.response.send_message(
+                "ℹ️ 目前沒有符合條件的頻道可供刪除。", ephemeral=True
+            )
+
+        target_ids = {ch.id for ch in targets}
+        kept_channels = [ch for ch in self.guild.channels if ch.id not in target_ids]
+
+        del_preview = "\n".join(
+            f"• {'📁 ' if isinstance(ch, discord.CategoryChannel) else '#'}`{ch.name}`"
+            for ch in targets[:15]
+        )
+        if len(targets) > 15:
+            del_preview += f"\n… 以及另外 **{len(targets) - 15}** 個頻道"
+
+        kept_preview = (
+            ", ".join(
+                f"`{'📁 ' if isinstance(ch, discord.CategoryChannel) else '#'}{ch.name}`"
+                for ch in kept_channels[:15]
+            )
+            if kept_channels
+            else "（無，全部頻道將被刪除）"
+        )
+        if len(kept_channels) > 15:
+            kept_preview += f" … 等共 {len(kept_channels)} 個"
+
+        confirm_embed = discord.Embed(
+            title="🚨 最終確認：即將永久刪除頻道",
+            description=(
+                f"**操作模式**：{self.MODE_LABELS[self.mode]}\n"
+                f"**將刪除**：**{len(targets)}** 個頻道（**刪除後無法復原！**）"
+            ),
+            color=Colors.ERROR,
+        )
+        confirm_embed.add_field(name=f"🗑️ 待刪除頻道預覽（共 {len(targets)} 個）", value=del_preview, inline=False)
+        confirm_embed.add_field(name=f"🛡️ 保留頻道（共 {len(kept_channels)} 個）", value=kept_preview, inline=False)
+        confirm_embed.set_footer(text="請再次確認無誤後再點擊下方紅色按鈕")
+
+        confirm_view = ChannelDeleteConfirmView(self, targets)
+        await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.secondary, row=2)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            embed=EmbedFactory.info("已取消操作", "未刪除任何頻道。"),
+            view=None,
+        )
 
 
 class Tools(commands.GroupCog, name="tool", description="實用生活工具箱"):
@@ -2021,6 +2370,54 @@ class Tools(commands.GroupCog, name="tool", description="實用生活工具箱")
 
         view = AntiScamView(interaction.guild, interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 批次刪除頻道工具（全部刪除 / 保留指定 / 刪除指定）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @app_commands.command(
+        name="delete_channels",
+        description="🗑️ 批次刪除頻道（可選：刪除所有頻道 / 保留指定頻道 / 刪除指定頻道）",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        mode="預設操作模式（開啟面板後仍可隨時切換）",
+        include_categories="是否一併包含分類頻道（預設：是）",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="🎯 刪除指定頻道", value="specific"),
+            app_commands.Choice(name="🛡️ 保留指定頻道（刪除其餘頻道）", value="keep"),
+            app_commands.Choice(name="💥 刪除所有頻道", value="all"),
+        ]
+    )
+    async def delete_channels(
+        self,
+        interaction: discord.Interaction,
+        mode: str = "specific",
+        include_categories: bool = True,
+    ):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ 此指令僅能在伺服器中使用！", ephemeral=True)
+
+        if not interaction.guild.me.guild_permissions.manage_channels:
+            return await interaction.response.send_message(
+                embed=EmbedFactory.error("權限不足", "機器人缺少 `管理頻道 (Manage Channels)` 權限，無法刪除頻道。"),
+                ephemeral=True,
+            )
+
+        view = ChannelDeleteManagerView(
+            guild=interaction.guild,
+            author_id=interaction.user.id,
+            origin_channel_id=interaction.channel_id,
+            mode=mode,
+            include_categories=include_categories,
+        )
+        await interaction.response.send_message(
+            embed=view.build_embed(),
+            view=view,
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot):
